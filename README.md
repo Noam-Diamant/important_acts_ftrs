@@ -100,9 +100,14 @@ Both scripts accept the following arguments:
 
 ## Output Files
 
-**Per-layer plots**: Histograms and scatter plots showing gradient distributions
-**Combined plots**: All layers visualized together
-**Data files**: `.npy` arrays with gradient values (65,536 for SAE, 896 for activations)
+Results are saved to automatically-named directories:
+- **SAE analysis**: `sae_features_model_{model}_num_samples_{N}_batch_size_{B}_layers_{L}_{timestamp}/`
+- **Layer analysis**: `layer_activations_model_{model}_num_samples_{N}_batch_size_{B}_layers_{L}_{timestamp}/`
+
+Each directory contains:
+- **Per-layer plots**: Histograms and scatter plots showing gradient distributions
+- **Combined plots**: All layers visualized together
+- **Data files**: `.npy` arrays with gradient values (65,536 for SAE, 896 for activations)
 
 Files use `_{mode}` suffix (`_mean` or `_mean_abs`). With `both` mode, also creates `_combined` subplot figures.
 

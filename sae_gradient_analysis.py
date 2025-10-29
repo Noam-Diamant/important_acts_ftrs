@@ -718,8 +718,7 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_safe = args.model_name.replace("/", "_")
         layers_safe = args.layers.replace("-", "to").replace(",", "_")
-        output_dir = f"model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}_{timestamp}"
-        #output_dir = os.path.join("important_feaures", output_dir)
+        output_dir = f"sae_features_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         print(f"\nOutputs will be saved to: {output_dir}")
     else:
