@@ -1,0 +1,178 @@
+{
+  "overall": {
+    "model_loading": 3.297266960144043,
+    "sae_loading": 33.737892627716064,
+    "dataset_preparation": 7.96445107460022,
+    "total_runtime": 1847.0111107826233
+  },
+  "per_layer": {
+    "0": {
+      "gradient_computation": 84.35810899734497,
+      "histogram_plot": 0.5285789966583252,
+      "scatter_plot": 0.7035980224609375,
+      "save_data": 0.0411982536315918,
+      "total": 85.63150262832642
+    },
+    "1": {
+      "gradient_computation": 81.82604432106018,
+      "histogram_plot": 0.4524729251861572,
+      "scatter_plot": 0.6778669357299805,
+      "save_data": 0.027589797973632812,
+      "total": 82.98398613929749
+    },
+    "2": {
+      "gradient_computation": 81.34640264511108,
+      "histogram_plot": 0.4873490333557129,
+      "scatter_plot": 0.7153372764587402,
+      "save_data": 0.036052703857421875,
+      "total": 82.58515548706055
+    },
+    "3": {
+      "gradient_computation": 81.58946990966797,
+      "histogram_plot": 0.453749418258667,
+      "scatter_plot": 0.7158372402191162,
+      "save_data": 0.03370785713195801,
+      "total": 82.79277515411377
+    },
+    "4": {
+      "gradient_computation": 79.89706182479858,
+      "histogram_plot": 0.7566268444061279,
+      "scatter_plot": 0.840160608291626,
+      "save_data": 0.04021191596984863,
+      "total": 81.53407073020935
+    },
+    "5": {
+      "gradient_computation": 79.21110105514526,
+      "histogram_plot": 0.4404444694519043,
+      "scatter_plot": 0.698014497756958,
+      "save_data": 0.026461124420166016,
+      "total": 80.37604022026062
+    },
+    "6": {
+      "gradient_computation": 78.70474648475647,
+      "histogram_plot": 0.42075586318969727,
+      "scatter_plot": 0.7764873504638672,
+      "save_data": 0.035839080810546875,
+      "total": 79.93784475326538
+    },
+    "7": {
+      "gradient_computation": 77.97968530654907,
+      "histogram_plot": 0.42783117294311523,
+      "scatter_plot": 0.6734087467193604,
+      "save_data": 0.03478860855102539,
+      "total": 79.11572194099426
+    },
+    "8": {
+      "gradient_computation": 77.20771670341492,
+      "histogram_plot": 0.4207899570465088,
+      "scatter_plot": 0.9055461883544922,
+      "save_data": 0.025606393814086914,
+      "total": 78.55966973304749
+    },
+    "9": {
+      "gradient_computation": 76.26414632797241,
+      "histogram_plot": 0.4367499351501465,
+      "scatter_plot": 0.8761630058288574,
+      "save_data": 0.03777503967285156,
+      "total": 77.61484408378601
+    },
+    "10": {
+      "gradient_computation": 75.51363635063171,
+      "histogram_plot": 0.3944709300994873,
+      "scatter_plot": 0.6426844596862793,
+      "save_data": 0.07380509376525879,
+      "total": 76.62460660934448
+    },
+    "11": {
+      "gradient_computation": 74.91600370407104,
+      "histogram_plot": 0.41237306594848633,
+      "scatter_plot": 0.7026028633117676,
+      "save_data": 0.06032824516296387,
+      "total": 76.0913155078888
+    },
+    "12": {
+      "gradient_computation": 73.17987728118896,
+      "histogram_plot": 0.40685534477233887,
+      "scatter_plot": 0.6867728233337402,
+      "save_data": 0.04410672187805176,
+      "total": 74.31762385368347
+    },
+    "13": {
+      "gradient_computation": 72.02357983589172,
+      "histogram_plot": 0.4003279209136963,
+      "scatter_plot": 0.6824431419372559,
+      "save_data": 0.03700613975524902,
+      "total": 73.14336848258972
+    },
+    "14": {
+      "gradient_computation": 71.71481537818909,
+      "histogram_plot": 0.4321599006652832,
+      "scatter_plot": 0.7917659282684326,
+      "save_data": 0.04411745071411133,
+      "total": 72.98287391662598
+    },
+    "15": {
+      "gradient_computation": 71.27701115608215,
+      "histogram_plot": 0.4092092514038086,
+      "scatter_plot": 0.5511233806610107,
+      "save_data": 0.03857064247131348,
+      "total": 72.27592754364014
+    },
+    "16": {
+      "gradient_computation": 70.00272583961487,
+      "histogram_plot": 0.4411189556121826,
+      "scatter_plot": 0.6987016201019287,
+      "save_data": 0.04073739051818848,
+      "total": 71.18329930305481
+    },
+    "17": {
+      "gradient_computation": 68.61519742012024,
+      "histogram_plot": 0.21940374374389648,
+      "scatter_plot": 0.41977643966674805,
+      "save_data": 0.05691385269165039,
+      "total": 69.31130075454712
+    },
+    "18": {
+      "gradient_computation": 68.03700542449951,
+      "histogram_plot": 0.23306560516357422,
+      "scatter_plot": 0.36480236053466797,
+      "save_data": 0.027613401412963867,
+      "total": 68.66249370574951
+    },
+    "19": {
+      "gradient_computation": 67.6950855255127,
+      "histogram_plot": 0.3823981285095215,
+      "scatter_plot": 0.4169912338256836,
+      "save_data": 0.03216814994812012,
+      "total": 68.52665114402771
+    },
+    "20": {
+      "gradient_computation": 67.50348973274231,
+      "histogram_plot": 0.2221364974975586,
+      "scatter_plot": 0.3719754219055176,
+      "save_data": 0.038758039474487305,
+      "total": 68.13636779785156
+    },
+    "21": {
+      "gradient_computation": 66.73464107513428,
+      "histogram_plot": 0.421372652053833,
+      "scatter_plot": 0.6914401054382324,
+      "save_data": 0.05677676200866699,
+      "total": 67.90429162979126
+    },
+    "22": {
+      "gradient_computation": 65.52660942077637,
+      "histogram_plot": 0.22798967361450195,
+      "scatter_plot": 0.3579246997833252,
+      "save_data": 0.013314962387084961,
+      "total": 66.12584519386292
+    },
+    "23": {
+      "gradient_computation": 64.41959404945374,
+      "histogram_plot": 0.3795793056488037,
+      "scatter_plot": 0.7375640869140625,
+      "save_data": 0.04962754249572754,
+      "total": 65.58637571334839
+    }
+  }
+}
