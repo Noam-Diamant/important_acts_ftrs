@@ -852,10 +852,14 @@ def main():
     total_plot_time = 0
     if layer_timings:
         total_grad_time = sum(t['gradient_computation'] for t in layer_timings.values())
-        # total_plot_time = sum(t['histogram_plot'] + t['feature_plot'] + t['scatter_plot'] 
-        #                     for t in layer_timings.values())
-        total_plot_time = sum(t['histogram_plot'] + t['scatter_plot'] 
-                            for t in layer_timings.values())    
+        # Calculate plot time based on aggregation mode
+        if args.aggregation_mode == 'both':
+            total_plot_time = sum(
+                t.get('mean_plots', 0) + t.get('mean_abs_plots', 0) + t.get('combined_plots', 0)
+                for t in layer_timings.values()
+            )
+        else:
+            total_plot_time = sum(t.get('plots', 0) for t in layer_timings.values())    
     # Print final timing summary
     summary_lines = [
         "\n" + "="*60,
@@ -908,10 +912,13 @@ def main():
                     lt = layer_timings[layer_idx]
                     f.write(f'\nLayer {layer_idx}:\n')
                     f.write(f'  Gradient computation: {lt["gradient_computation"]:.2f}s\n')
-                    f.write(f'  Histogram plot:       {lt["histogram_plot"]:.2f}s\n')
-                    # f.write(f'  Feature plot:         {lt["feature_plot"]:.2f}s\n')
-                    f.write(f'  Scatter plot:         {lt["scatter_plot"]:.2f}s\n')
-                    f.write(f'  Save data:            {lt["save_data"]:.2f}s\n')
+                    if args.aggregation_mode == 'both':
+                        f.write(f'  Mean plots:          {lt.get("mean_plots", 0):.2f}s\n')
+                        f.write(f'  Mean_abs plots:      {lt.get("mean_abs_plots", 0):.2f}s\n')
+                        f.write(f'  Combined plots:      {lt.get("combined_plots", 0):.2f}s\n')
+                    else:
+                        f.write(f'  Plots:               {lt.get("plots", 0):.2f}s\n')
+                        f.write(f'  Save data:           {lt.get("save_data", 0):.2f}s\n')
                     f.write(f'  Total for layer:      {lt["total"]:.2f}s\n')
         
         print(f"Timing summary (TXT) saved to {timing_txt_file}")
