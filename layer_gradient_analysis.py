@@ -123,6 +123,10 @@ def parse_args():
     parser.add_argument('--aggregation_mode', type=str, default='mean_abs',
                         choices=['mean', 'mean_abs', 'both'],
                         help='Aggregation mode for gradients: mean (signed), mean_abs (absolute), or both (default: mean_abs)')
+    parser.add_argument('--normalize_gradients', action='store_true',
+                        help='Normalize gradients so sum of absolute values equals dimension size (default: False)')
+    parser.add_argument('--save_consolidated', type=str, default=None,
+                        help='Path to save consolidated .npz file with all results (optional)')
     return parser.parse_args()
 
 
@@ -140,6 +144,25 @@ def parse_layer_range(layer_spec: str) -> List[int]:
         return list(range(start, end + 1))
     else:
         return [int(x.strip()) for x in layer_spec.split(',')]
+
+
+def normalize_gradients(gradients: np.ndarray, dimension_size: int) -> np.ndarray:
+    """Normalize gradients so sum of absolute values equals dimension size.
+    
+    Args:
+        gradients: Array of gradient values
+        dimension_size: Target dimension size for normalization
+    
+    Returns:
+        Normalized gradient array where sum(abs(gradients)) == dimension_size
+    """
+    abs_sum = np.sum(np.abs(gradients))
+    if abs_sum == 0:
+        print("Warning: Sum of absolute gradients is zero, returning original gradients")
+        return gradients
+    
+    normalized = gradients * (dimension_size / abs_sum)
+    return normalized
 
 
 def load_model_and_tokenizer(model_name: str, device: str):
@@ -223,7 +246,8 @@ def compute_gradients_for_layer(
     layer_idx: int,
     device: str,
     aggregation_mode: str,
-    model_config: Dict[str, str]
+    model_config: Dict[str, str],
+    normalize: bool = False
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
     """Compute gradients of loss w.r.t. raw MLP output activations for a specific layer.
     
@@ -235,6 +259,7 @@ def compute_gradients_for_layer(
         device: Device to use
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
+        normalize: If True, normalize gradients so sum of absolute values equals dimension size
     
     Returns:
         Array of aggregated gradients for each activation dimension, or dict with both if mode is 'both'
@@ -332,9 +357,17 @@ def compute_gradients_for_layer(
             print(f"Warning: No gradients computed for layer {layer_idx}")
             return None
         mean_gradients = np.mean(all_gradients_signed, axis=0)
-        print(f"Layer {layer_idx}: Mean gradient = {mean_gradients.mean():.6f}, "
+        dimension_size = len(mean_gradients)
+        
+        print(f"Layer {layer_idx} (before normalization): Mean gradient = {mean_gradients.mean():.6f}, "
               f"Max gradient = {np.abs(mean_gradients).max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
+        
+        if normalize:
+            mean_gradients = normalize_gradients(mean_gradients, dimension_size)
+            print(f"Layer {layer_idx} (after normalization): Mean gradient = {mean_gradients.mean():.6f}, "
+                  f"Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+        
         return mean_gradients
     
     elif aggregation_mode == 'mean_abs':
@@ -342,9 +375,17 @@ def compute_gradients_for_layer(
             print(f"Warning: No gradients computed for layer {layer_idx}")
             return None
         mean_gradients = np.mean(all_gradients_abs, axis=0)
-        print(f"Layer {layer_idx}: Mean abs gradient = {mean_gradients.mean():.6f}, "
+        dimension_size = len(mean_gradients)
+        
+        print(f"Layer {layer_idx} (before normalization): Mean abs gradient = {mean_gradients.mean():.6f}, "
               f"Max gradient = {mean_gradients.max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
+        
+        if normalize:
+            mean_gradients = normalize_gradients(mean_gradients, dimension_size)
+            print(f"Layer {layer_idx} (after normalization): Mean gradient = {mean_gradients.mean():.6f}, "
+                  f"Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+        
         return mean_gradients
     
     else:  # both
@@ -353,11 +394,21 @@ def compute_gradients_for_layer(
             return None
         mean_gradients_signed = np.mean(all_gradients_signed, axis=0)
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
-        print(f"Layer {layer_idx}:")
+        dimension_size = len(mean_gradients_signed)
+        
+        print(f"Layer {layer_idx} (before normalization):")
         print(f"  Mean gradient (signed) = {mean_gradients_signed.mean():.6f}, "
               f"Max = {np.abs(mean_gradients_signed).max():.6f}, Std = {mean_gradients_signed.std():.6f}")
         print(f"  Mean gradient (abs) = {mean_gradients_abs.mean():.6f}, "
               f"Max = {mean_gradients_abs.max():.6f}, Std = {mean_gradients_abs.std():.6f}")
+        
+        if normalize:
+            mean_gradients_signed = normalize_gradients(mean_gradients_signed, dimension_size)
+            mean_gradients_abs = normalize_gradients(mean_gradients_abs, dimension_size)
+            print(f"Layer {layer_idx} (after normalization):")
+            print(f"  Mean gradient (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
+            print(f"  Mean gradient (abs): Sum of abs = {np.sum(np.abs(mean_gradients_abs)):.1f} (target: {dimension_size})")
+        
         return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
 
@@ -643,6 +694,206 @@ def create_combined_scatter_plots(all_gradients: Dict[int, np.ndarray], output_d
     print(f"Saved combined scatter plot to {output_path}")
 
 
+def save_consolidated_results(
+    all_results: Union[Dict[int, np.ndarray], Dict[str, Dict[int, np.ndarray]]],
+    args,
+    layers: List[int],
+    output_path: str,
+    aggregation_mode: str
+):
+    """Save all results in a consolidated .npz file.
+    
+    Args:
+        all_results: Dictionary with gradient results per layer
+        args: Command line arguments
+        layers: List of layer indices
+        output_path: Path to save .npz file
+        aggregation_mode: Aggregation mode used
+    """
+    # Prepare data dictionary for npz
+    save_dict = {}
+    
+    if aggregation_mode == 'both':
+        for mode in ['mean', 'mean_abs']:
+            for layer_idx in sorted(all_results[mode].keys()):
+                key = f'layer_{layer_idx}_{mode}'
+                save_dict[key] = all_results[mode][layer_idx]
+    else:
+        for layer_idx in sorted(all_results.keys()):
+            key = f'layer_{layer_idx}_{aggregation_mode}'
+            save_dict[key] = all_results[layer_idx]
+    
+    # Add metadata
+    metadata = {
+        'model_name': args.model_name,
+        'num_samples': args.num_samples,
+        'batch_size': args.batch_size,
+        'max_length': args.max_length,
+        'layers': layers,
+        'aggregation_mode': aggregation_mode,
+        'normalized': args.normalize_gradients,
+        'device': args.device,
+        'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
+    }
+    
+    # Add dimension info per layer
+    if aggregation_mode == 'both':
+        dimension_info = {layer_idx: len(all_results['mean'][layer_idx]) 
+                         for layer_idx in all_results['mean'].keys()}
+    else:
+        dimension_info = {layer_idx: len(all_results[layer_idx]) 
+                         for layer_idx in all_results.keys()}
+    metadata['dimension_sizes'] = dimension_info
+    
+    # Save as npz with metadata
+    save_dict['metadata'] = np.array([metadata], dtype=object)
+    
+    np.savez_compressed(output_path, **save_dict)
+    print(f"\nSaved consolidated results to: {output_path}")
+    print(f"  Layers included: {sorted([k for k in save_dict.keys() if k != 'metadata'])}")
+    print(f"  File size: {os.path.getsize(output_path) / (1024**2):.2f} MB")
+
+
+def create_enhanced_metadata(
+    all_results: Union[Dict[int, np.ndarray], Dict[str, Dict[int, np.ndarray]]],
+    args,
+    layers: List[int],
+    timing_stats: Dict,
+    layer_timings: Dict,
+    aggregation_mode: str
+) -> Dict:
+    """Create enhanced metadata dictionary with comprehensive information.
+    
+    Args:
+        all_results: Dictionary with gradient results per layer
+        args: Command line arguments
+        layers: List of layer indices
+        timing_stats: Overall timing statistics
+        layer_timings: Per-layer timing information
+        aggregation_mode: Aggregation mode used
+    
+    Returns:
+        Enhanced metadata dictionary
+    """
+    metadata = {
+        'experiment_info': {
+            'model_name': args.model_name,
+            'num_samples': args.num_samples,
+            'batch_size': args.batch_size,
+            'max_length': args.max_length,
+            'device': args.device,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        'analysis_config': {
+            'layers': layers,
+            'aggregation_mode': aggregation_mode,
+            'normalized': args.normalize_gradients,
+        },
+        'timing_stats': timing_stats,
+        'per_layer_timing': layer_timings,
+        'layer_statistics': {},
+        'dimension_info': {}
+    }
+    
+    # Add per-layer statistics and dimension info
+    if aggregation_mode == 'both':
+        for layer_idx in all_results['mean'].keys():
+            dimension_size = len(all_results['mean'][layer_idx])
+            metadata['dimension_info'][f'layer_{layer_idx}'] = dimension_size
+            metadata['layer_statistics'][f'layer_{layer_idx}'] = {
+                'mean': {
+                    'mean': float(all_results['mean'][layer_idx].mean()),
+                    'std': float(all_results['mean'][layer_idx].std()),
+                    'max': float(np.abs(all_results['mean'][layer_idx]).max()),
+                    'sum_abs': float(np.sum(np.abs(all_results['mean'][layer_idx])))
+                },
+                'mean_abs': {
+                    'mean': float(all_results['mean_abs'][layer_idx].mean()),
+                    'std': float(all_results['mean_abs'][layer_idx].std()),
+                    'max': float(all_results['mean_abs'][layer_idx].max()),
+                    'sum_abs': float(np.sum(np.abs(all_results['mean_abs'][layer_idx])))
+                }
+            }
+    else:
+        for layer_idx in all_results.keys():
+            dimension_size = len(all_results[layer_idx])
+            metadata['dimension_info'][f'layer_{layer_idx}'] = dimension_size
+            metadata['layer_statistics'][f'layer_{layer_idx}'] = {
+                'mean': float(all_results[layer_idx].mean()),
+                'std': float(all_results[layer_idx].std()),
+                'max': float(np.abs(all_results[layer_idx]).max()),
+                'sum_abs': float(np.sum(np.abs(all_results[layer_idx])))
+            }
+    
+    # Add loading instructions
+    metadata['loading_instructions'] = {
+        'npz_file': 'Use np.load(filename, allow_pickle=True) to load consolidated results',
+        'individual_npy': 'Use np.load(layer_X_mode_gradients.npy) for individual layers',
+        'example_code': [
+            "# Load consolidated .npz file:",
+            "data = np.load('results.npz', allow_pickle=True)",
+            "metadata = data['metadata'].item()",
+            "layer_0_gradients = data['layer_0_mean_abs']",
+            "",
+            "# Or use the helper function:",
+            "results = load_results('results.npz')"
+        ]
+    }
+    
+    return metadata
+
+
+def load_results(path: str) -> Dict:
+    """Helper function to load saved gradient analysis results.
+    
+    Args:
+        path: Path to .npz file or directory containing results
+    
+    Returns:
+        Dictionary with 'data' (gradients per layer) and 'metadata' keys
+    """
+    if path.endswith('.npz'):
+        # Load consolidated npz file
+        data = np.load(path, allow_pickle=True)
+        
+        # Extract metadata
+        metadata = data['metadata'].item() if 'metadata' in data else {}
+        
+        # Extract gradient data
+        gradients = {}
+        for key in data.keys():
+            if key != 'metadata':
+                gradients[key] = data[key]
+        
+        return {
+            'data': gradients,
+            'metadata': metadata
+        }
+    else:
+        # Load from directory with individual .npy files
+        import json
+        
+        # Load metadata
+        metadata_path = os.path.join(path, 'metadata.json')
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+        else:
+            metadata = {}
+        
+        # Find all .npy files
+        gradients = {}
+        for file in os.listdir(path):
+            if file.endswith('_gradients.npy'):
+                key = file.replace('_gradients.npy', '')
+                gradients[key] = np.load(os.path.join(path, file))
+        
+        return {
+            'data': gradients,
+            'metadata': metadata
+        }
+
+
 def main():
     """Main function to run the experiment."""
     start_time_total = time.time()
@@ -712,7 +963,8 @@ def main():
             layer_idx=layer_idx,
             device=args.device,
             aggregation_mode=args.aggregation_mode,
-            model_config=model_config
+            model_config=model_config,
+            normalize=args.normalize_gradients
         )
         layer_timing['gradient_computation'] = time.time() - grad_start
         
@@ -795,15 +1047,32 @@ def main():
     
     # Save timing stats and create combined plots if output directory exists
     if output_dir is not None:
-        # Save timing stats to JSON
-        timing_json_file = os.path.join(output_dir, 'timing_stats.json')
         import json
+        
+        # Create enhanced metadata
+        enhanced_metadata = create_enhanced_metadata(
+            all_results=all_results,
+            args=args,
+            layers=layers,
+            timing_stats=timing_stats,
+            layer_timings=layer_timings,
+            aggregation_mode=args.aggregation_mode
+        )
+        
+        # Save enhanced metadata to JSON
+        metadata_json_file = os.path.join(output_dir, 'metadata.json')
+        with open(metadata_json_file, 'w') as f:
+            json.dump(enhanced_metadata, f, indent=2)
+        print(f"\nEnhanced metadata saved to {metadata_json_file}")
+        
+        # Save timing stats to JSON (backward compatibility)
+        timing_json_file = os.path.join(output_dir, 'timing_stats.json')
         with open(timing_json_file, 'w') as f:
             json.dump({
                 'overall': timing_stats,
                 'per_layer': layer_timings
             }, f, indent=2)
-        print(f"\nTiming statistics (JSON) saved to {timing_json_file}")
+        print(f"Timing statistics (JSON) saved to {timing_json_file}")
         
         # Save timing summary to text file
         timing_txt_file = os.path.join(output_dir, 'timing_summary.txt')
@@ -843,7 +1112,32 @@ def main():
         num_layers_processed = len(all_results) if args.aggregation_mode != 'both' else len(all_results['mean'])
         print(f"\nCompleted analysis for {num_layers_processed} layers")
         print(f"Results saved to {output_dir}")
-    else:
+    
+    # Save consolidated .npz file if requested
+    if args.save_consolidated is not None:
+        consolidated_path = args.save_consolidated
+        if not consolidated_path.endswith('.npz'):
+            consolidated_path += '.npz'
+        
+        save_consolidated_results(
+            all_results=all_results,
+            args=args,
+            layers=layers,
+            output_path=consolidated_path,
+            aggregation_mode=args.aggregation_mode
+        )
+    elif output_dir is not None:
+        # Auto-save consolidated file in output directory
+        consolidated_path = os.path.join(output_dir, 'consolidated_results.npz')
+        save_consolidated_results(
+            all_results=all_results,
+            args=args,
+            layers=layers,
+            output_path=consolidated_path,
+            aggregation_mode=args.aggregation_mode
+        )
+    
+    if output_dir is None:
         num_layers_processed = len(all_results) if args.aggregation_mode != 'both' else len(all_results['mean'])
         print(f"\nCompleted analysis for {num_layers_processed} layers")
         print("Results were NOT saved (use --save_outputs to enable saving)")
