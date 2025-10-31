@@ -152,8 +152,9 @@ def parse_args():
     parser.add_argument('--aggregation_mode', type=str, default='mean_abs',
                         choices=['mean', 'mean_abs', 'both'],
                         help='Aggregation mode for gradients: mean (signed), mean_abs (absolute), or both (default: mean_abs)')
-    parser.add_argument('--normalize_gradients', action='store_true',
-                        help='Normalize gradients so sum of absolute values equals dimension size (default: False)')
+    parser.add_argument('--normalize_gradients', type=str, default='sum_abs',
+                        choices=['none', 'sum_abs', 'sum'],
+                        help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size) (default: sum_abs)')
     parser.add_argument('--save_consolidated', type=str, default=None,
                         help='Path to save consolidated .npz file with all results (optional)')
     return parser.parse_args()
@@ -175,23 +176,41 @@ def parse_layer_range(layer_spec: str) -> List[int]:
         return [int(x.strip()) for x in layer_spec.split(',')]
 
 
-def normalize_gradients(gradients: np.ndarray, dimension_size: int) -> np.ndarray:
-    """Normalize gradients so sum of absolute values equals dimension size.
+def normalize_gradients(gradients: np.ndarray, dimension_size: int, mode: str = 'sum_abs') -> np.ndarray:
+    """Normalize gradients based on the specified mode.
     
     Args:
         gradients: Array of gradient values
         dimension_size: Target dimension size for normalization
+        mode: Normalization mode ('none', 'sum_abs', or 'sum')
+            - 'none': No normalization, returns original gradients
+            - 'sum_abs': Normalize so sum(abs(gradients)) == dimension_size
+            - 'sum': Normalize so sum(gradients) == dimension_size
     
     Returns:
-        Normalized gradient array where sum(abs(gradients)) == dimension_size
+        Normalized gradient array based on the specified mode
     """
-    abs_sum = np.sum(np.abs(gradients))
-    if abs_sum == 0:
-        print("Warning: Sum of absolute gradients is zero, returning original gradients")
+    if mode == 'none':
         return gradients
     
-    normalized = gradients * (dimension_size / abs_sum)
-    return normalized
+    elif mode == 'sum_abs':
+        abs_sum = np.sum(np.abs(gradients))
+        if abs_sum == 0:
+            print("Warning: Sum of absolute gradients is zero, returning original gradients")
+            return gradients
+        normalized = gradients * (dimension_size / abs_sum)
+        return normalized
+    
+    elif mode == 'sum':
+        total_sum = np.sum(gradients)
+        if total_sum == 0:
+            print("Warning: Sum of gradients is zero, returning original gradients")
+            return gradients
+        normalized = gradients * (dimension_size / total_sum)
+        return normalized
+    
+    else:
+        raise ValueError(f"Unknown normalization mode: {mode}. Use 'none', 'sum_abs', or 'sum'")
 
 
 def load_model_and_tokenizer(model_name: str, device: str):
@@ -305,7 +324,7 @@ def compute_gradients_for_layer(
     device: str,
     aggregation_mode: str,
     model_config: Dict[str, str],
-    normalize: bool = False
+    normalize: str = 'none'
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
     """Compute gradients of loss w.r.t. SAE features for a specific layer.
     
@@ -318,7 +337,7 @@ def compute_gradients_for_layer(
         device: Device to use
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
-        normalize: If True, normalize gradients so sum of absolute values equals dimension size
+        normalize: Normalization mode ('none', 'sum_abs', or 'sum')
     
     Returns:
         Array of aggregated gradients for each SAE feature, or dict with both if mode is 'both'
@@ -460,10 +479,12 @@ def compute_gradients_for_layer(
               f"Max gradient = {np.abs(mean_gradients).max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
         
-        if normalize:
-            mean_gradients = normalize_gradients(mean_gradients, dimension_size)
-            print(f"Layer {layer_idx} (after normalization): Mean gradient = {mean_gradients.mean():.6f}, "
-                  f"Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+        if normalize != 'none':
+            mean_gradients = normalize_gradients(mean_gradients, dimension_size, mode=normalize)
+            if normalize == 'sum_abs':
+                print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+            elif normalize == 'sum':
+                print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
         
         return mean_gradients
     
@@ -478,10 +499,12 @@ def compute_gradients_for_layer(
               f"Max gradient = {mean_gradients.max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
         
-        if normalize:
-            mean_gradients = normalize_gradients(mean_gradients, dimension_size)
-            print(f"Layer {layer_idx} (after normalization): Mean gradient = {mean_gradients.mean():.6f}, "
-                  f"Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+        if normalize != 'none':
+            mean_gradients = normalize_gradients(mean_gradients, dimension_size, mode=normalize)
+            if normalize == 'sum_abs':
+                print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
+            elif normalize == 'sum':
+                print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
         
         return mean_gradients
     
@@ -499,12 +522,16 @@ def compute_gradients_for_layer(
         print(f"  Mean gradient (abs) = {mean_gradients_abs.mean():.6f}, "
               f"Max = {mean_gradients_abs.max():.6f}, Std = {mean_gradients_abs.std():.6f}")
         
-        if normalize:
-            mean_gradients_signed = normalize_gradients(mean_gradients_signed, dimension_size)
-            mean_gradients_abs = normalize_gradients(mean_gradients_abs, dimension_size)
-            print(f"Layer {layer_idx} (after normalization):")
-            print(f"  Mean gradient (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
-            print(f"  Mean gradient (abs): Sum of abs = {np.sum(np.abs(mean_gradients_abs)):.1f} (target: {dimension_size})")
+        if normalize != 'none':
+            mean_gradients_signed = normalize_gradients(mean_gradients_signed, dimension_size, mode=normalize)
+            mean_gradients_abs = normalize_gradients(mean_gradients_abs, dimension_size, mode=normalize)
+            print(f"Layer {layer_idx} (after {normalize}):")
+            if normalize == 'sum_abs':
+                print(f"  Mean gradient (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
+                print(f"  Mean gradient (abs): Sum of abs = {np.sum(np.abs(mean_gradients_abs)):.1f} (target: {dimension_size})")
+            elif normalize == 'sum':
+                print(f"  Mean gradient (signed): Sum = {np.sum(mean_gradients_signed):.1f} (target: {dimension_size})")
+                print(f"  Mean gradient (abs): Sum = {np.sum(mean_gradients_abs):.1f} (target: {dimension_size})")
         
         return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
@@ -878,7 +905,7 @@ def save_consolidated_results(
         'max_length': args.max_length,
         'layers': layers,
         'aggregation_mode': aggregation_mode,
-        'normalized': args.normalize_gradients,
+        'normalization_mode': args.normalize_gradients,
         'device': args.device,
         'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
     }
@@ -934,7 +961,7 @@ def create_enhanced_metadata(
         'analysis_config': {
             'layers': layers,
             'aggregation_mode': aggregation_mode,
-            'normalized': args.normalize_gradients,
+            'normalization_mode': args.normalize_gradients,
         },
         'timing_stats': timing_stats,
         'per_layer_timing': layer_timings,

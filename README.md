@@ -132,8 +132,10 @@ Both scripts accept the following arguments:
   - `mean`: Signed mean (shows directional effect)
   - `mean_abs`: Mean absolute value (shows magnitude)
   - `both`: Compute and plot both modes
-- `--normalize_gradients`: Normalize gradients by dimension size (default: False)
-  - When enabled, sum of absolute gradient values equals the dimension size
+- `--normalize_gradients`: Normalization mode (default: `sum_abs`)
+  - `none`: No normalization (raw gradient values)
+  - `sum_abs`: Sum of absolute values equals dimension size
+  - `sum`: Sum of gradients equals dimension size
   - For SAE: 65,536 features, for layer activations: 896 dimensions
 - `--save_consolidated`: Path to save consolidated .npz file (optional)
   - If provided, saves all results in a single compressed file
@@ -171,37 +173,94 @@ Files use `_{mode}` suffix (`_mean` or `_mean_abs`). With `both` mode, also crea
 
 ## Gradient Normalization
 
-The `--normalize_gradients` flag scales gradients so that the sum of absolute values equals the dimension size. This is useful for:
+The `--normalize_gradients` option provides three normalization modes to scale gradients for different analysis needs.
 
-### When to Use Normalization
+### Normalization Modes
 
-**Use normalized gradients when:**
+**1. `none` - No Normalization**
+- Returns raw gradient values as computed
+- Preserves absolute scale of gradients
+- Best for understanding actual gradient magnitudes
+
+**2. `sum_abs` - Sum of Absolute Values (Default)**
+- Scales gradients so `sum(abs(gradients)) = dimension_size`
+- Preserves relative importance and signs
+- Best for comparing importance across layers/models with different dimensions
+
+**3. `sum` - Total Sum**
+- Scales gradients so `sum(gradients) = dimension_size`
+- Can amplify or diminish values based on overall gradient direction
+- Useful when gradient direction balance is important
+
+### When to Use Each Mode
+
+**Use `none` (no normalization) when:**
+- Analyzing absolute gradient magnitudes across the entire model
+- Understanding the actual scale of gradient effects
+- Debugging or analyzing specific raw gradient values
+- Comparing layers with the same dimension size
+
+**Use `sum_abs` (default) when:**
 - Comparing gradient importance across different layers or models
 - Working with different dimension sizes (e.g., comparing SAE features vs raw activations)
 - You want gradients to represent relative importance within each layer
 - Building downstream models that need consistent input scales
+- You want to preserve the sign of individual gradients
 
-**Use raw gradients when:**
-- Analyzing absolute gradient magnitudes across the entire model
-- Understanding the actual scale of gradient effects
-- Debugging or analyzing specific gradient values
+**Use `sum` when:**
+- You need the total sum to equal dimension size (not absolute sum)
+- Analyzing directional balance of gradients
+- Working with algorithms that expect this specific normalization
 
 ### Example Usage
 
 ```bash
-# With normalization - sum of abs(gradients) will equal 65,536 for SAE
+# Default: sum_abs normalization
 python important_acts_ftrs/sae_gradient_analysis.py \
-    --normalize_gradients \
+    --normalize_gradients sum_abs \
     --save_outputs
 
-# Without normalization - raw gradient values
+# No normalization - raw gradient values
 python important_acts_ftrs/sae_gradient_analysis.py \
+    --normalize_gradients none \
+    --save_outputs
+
+# Sum normalization
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --normalize_gradients sum \
     --save_outputs
 ```
 
-After normalization:
+### Normalization Results
+
+After `sum_abs` normalization:
 - **SAE features**: `sum(abs(gradients)) = 65,536` (number of features)
 - **Layer activations**: `sum(abs(gradients)) = 896` (activation dimension)
+
+After `sum` normalization:
+- **SAE features**: `sum(gradients) = 65,536`
+- **Layer activations**: `sum(gradients) = 896`
+
+### Example with Numbers
+
+```python
+# Original gradients (3 dimensions)
+gradients = [0.5, -0.3, 0.2]
+dimension_size = 3
+
+# Mode: none
+# Result: [0.5, -0.3, 0.2]
+
+# Mode: sum_abs
+# sum(abs([0.5, -0.3, 0.2])) = 1.0
+# scale = 3 / 1.0 = 3.0
+# Result: [1.5, -0.9, 0.6]  → sum(abs) = 3.0 ✓
+
+# Mode: sum
+# sum([0.5, -0.3, 0.2]) = 0.4
+# scale = 3 / 0.4 = 7.5
+# Result: [3.75, -2.25, 1.5]  → sum = 3.0 ✓
+```
 
 ## Loading Saved Results
 
@@ -220,7 +279,7 @@ data = np.load('path/to/consolidated_results.npz', allow_pickle=True)
 # Access metadata
 metadata = data['metadata'].item()
 print(f"Model: {metadata['model_name']}")
-print(f"Normalized: {metadata['normalized']}")
+print(f"Normalization mode: {metadata['normalization_mode']}")
 print(f"Dimension sizes: {metadata['dimension_sizes']}")
 
 # Access gradient data for specific layers
