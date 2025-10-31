@@ -1,14 +1,27 @@
 # Gradient Analysis Tools
 
-Two tools for analyzing how model representations affect language model loss on Qwen2.5-0.5B.
+Two tools for analyzing how model representations affect language model loss across multiple architectures.
 
 ## Overview
 
-**`sae_gradient_analysis.py`**: Analyzes gradients w.r.t. SAE features (65,536 dimensions)
+**`sae_gradient_analysis.py`**: Analyzes gradients w.r.t. SAE features (e.g., 65,536 dimensions)
 - Requires SAE models, slower but shows learned sparse features
 
-**`layer_gradient_analysis.py`**: Analyzes gradients w.r.t. raw MLP activations (896 dimensions)
+**`layer_gradient_analysis.py`**: Analyzes gradients w.r.t. raw MLP activations (e.g., 896 dimensions)
 - No SAE needed, faster, shows raw neural representations
+
+## Supported Models
+
+Both tools automatically detect and support:
+- **Qwen** (Qwen2.5-0.5B, etc.)
+- **Llama** (Llama-3.1-8B, etc.)
+- **Mistral** (Mistral-7B-v0.1, etc.)
+- **Zephyr** (Zephyr-7B-beta, etc.)
+- **Mixtral** (Mixtral-8x7B-Instruct-v0.1, etc.)
+- **Yi** (Yi-34B-Chat, etc.)
+- **Gemma** (Gemma-2-2B, etc.)
+
+The scripts automatically configure layer paths based on model architecture.
 
 ## Aggregation Modes
 
@@ -79,6 +92,28 @@ python important_acts_ftrs/layer_gradient_analysis.py \
     --aggregation_mode both \
     --save_outputs \
     --device cuda
+```
+
+#### Using Different Models
+
+```bash
+# Llama model
+python important_acts_ftrs/layer_gradient_analysis.py \
+    --model_name meta-llama/Llama-3.1-8B \
+    --layers "0-31" \
+    --save_outputs
+
+# Mistral model
+python important_acts_ftrs/layer_gradient_analysis.py \
+    --model_name mistralai/Mistral-7B-v0.1 \
+    --layers "0-31" \
+    --save_outputs
+
+# Gemma model
+python important_acts_ftrs/layer_gradient_analysis.py \
+    --model_name google/gemma-2-2b \
+    --layers "0-25" \
+    --save_outputs
 ```
 
 ## Command Line Arguments

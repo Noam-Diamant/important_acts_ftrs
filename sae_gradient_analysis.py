@@ -31,12 +31,104 @@ sys.path.insert(0, str(project_root / "dictionary_learning"))
 from dictionary_learning.utils import load_dictionary
 
 
-def get_sae_path(model_name: str, layer: int) -> str:
+def get_model_config(model_name: str) -> Dict[str, str]:
+    """Get model-specific configuration.
+    
+    Args:
+        model_name: Name of the model
+    
+    Returns:
+        Dictionary with model configuration
+    """
+    model_lower = model_name.lower()
+    
+    # Determine model architecture
+    if 'qwen' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'qwen',
+            'sae_prefix': '._qwen2.5_0.5B_Qwen_Qwen2.5-0.5B_batch_top_k_tokens500M'
+        }
+    elif 'llama' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'llama',
+            'sae_prefix': None  # Update with actual SAE path if available
+        }
+    elif 'mistral' in model_lower or 'zephyr' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'mistral',
+            'sae_prefix': None  # Update with actual SAE path if available
+        }
+    elif 'mixtral' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'mixtral',
+            'sae_prefix': None  # Update with actual SAE path if available
+        }
+    elif 'yi' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'yi',
+            'sae_prefix': None  # Update with actual SAE path if available
+        }
+    elif 'gemma' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'gemma',
+            'sae_prefix': None  # Update with actual SAE path if available
+        }
+    else:
+        # Default to standard transformer architecture
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'unknown',
+            'sae_prefix': None
+        }
+
+
+def get_layer_module(model, layer_idx: int, model_config: Dict[str, str]):
+    """Get the MLP module for a specific layer.
+    
+    Args:
+        model: The language model
+        layer_idx: Layer index
+        model_config: Model configuration dictionary
+    
+    Returns:
+        The MLP module for the specified layer
+    """
+    layer_path = model_config['layer_path'].format(layer_idx)
+    parts = layer_path.split('.')
+    
+    module = model
+    for part in parts:
+        module = getattr(module, part)
+    
+    return module
+
+
+def get_sae_path(model_name: str, layer: int, model_config: Dict[str, str]) -> str:
     """Get SAE path for a given model and layer.
     
-    This is a local implementation to avoid complex AlphaEdit dependencies.
+    Args:
+        model_name: Name of the model
+        layer: Layer index
+        model_config: Model configuration dictionary
+    
+    Returns:
+        Path to the SAE for the specified layer
     """
-    base_path = project_root / "dictionary_learning_demo" / "._qwen2.5_0.5B_Qwen_Qwen2.5-0.5B_batch_top_k_tokens500M"
+    sae_prefix = model_config.get('sae_prefix')
+    
+    if sae_prefix is None:
+        # Try to infer from model name
+        model_safe = model_name.replace("/", "_").replace("-", "_")
+        sae_prefix = f"._{model_safe}_batch_top_k_tokens500M"
+        print(f"Warning: Using inferred SAE prefix: {sae_prefix}")
+    
+    base_path = project_root / "dictionary_learning_demo" / sae_prefix
     return str(base_path / f"mlp_out_layer_{layer}" / "trainer_0")
 
 
@@ -106,13 +198,14 @@ def load_model_and_tokenizer(model_name: str, device: str):
     return model, tokenizer
 
 
-def load_saes(model_name: str, layers: List[int], device: str) -> Dict[int, torch.nn.Module]:
+def load_saes(model_name: str, layers: List[int], device: str, model_config: Dict[str, str]) -> Dict[int, torch.nn.Module]:
     """Load SAE models for specified layers.
     
     Args:
         model_name: Name of the model
         layers: List of layer indices
         device: Device to load SAEs on
+        model_config: Model configuration dictionary
     
     Returns:
         Dictionary mapping layer index to SAE model
@@ -122,7 +215,7 @@ def load_saes(model_name: str, layers: List[int], device: str) -> Dict[int, torc
     
     for layer in tqdm(layers, desc="Loading SAEs"):
         try:
-            sae_path = get_sae_path(model_name, layer)
+            sae_path = get_sae_path(model_name, layer, model_config)
             sae, config = load_dictionary(sae_path, device)
             saes[layer] = sae
         except Exception as e:
@@ -187,7 +280,8 @@ def compute_gradients_for_layer(
     layer_idx: int,
     sae,
     device: str,
-    aggregation_mode: str = 'mean_abs'
+    aggregation_mode: str,
+    model_config: Dict[str, str]
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
     """Compute gradients of loss w.r.t. SAE features for a specific layer.
     
@@ -199,6 +293,7 @@ def compute_gradients_for_layer(
         sae: SAE model for this layer
         device: Device to use
         aggregation_mode: 'mean', 'mean_abs', or 'both'
+        model_config: Model configuration dictionary
     
     Returns:
         Array of aggregated gradients for each SAE feature, or dict with both if mode is 'both'
@@ -208,10 +303,6 @@ def compute_gradients_for_layer(
     # Storage for gradients across all samples
     all_gradients_signed = []
     all_gradients_abs = []
-    
-    # Get the MLP output hook name
-    # For Qwen models, the structure is model.model.layers[i].mlp
-    hook_name = f"model.layers.{layer_idx}.mlp"
     
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Layer {layer_idx}")):
         input_ids = batch['input_ids'].to(device)
@@ -232,7 +323,7 @@ def compute_gradients_for_layer(
             return output
         
         # Register hook
-        target_module = model.model.layers[layer_idx].mlp
+        target_module = get_layer_module(model, layer_idx, model_config)
         hook_handle = target_module.register_forward_hook(capture_activation_hook)
         
         try:
@@ -706,6 +797,10 @@ def main():
     
     args = parse_args()
     
+    # Get model configuration
+    model_config = get_model_config(args.model_name)
+    print(f"Model type detected: {model_config['model_type']}")
+    
     # Parse layer range
     layers = parse_layer_range(args.layers)
     print(f"Analyzing layers: {layers}")
@@ -739,7 +834,7 @@ def main():
     print("TIMING: Loading SAEs")
     print("="*60)
     start_time = time.time()
-    saes = load_saes(args.model_name, layers, args.device)
+    saes = load_saes(args.model_name, layers, args.device, model_config)
     timing_stats['sae_loading'] = time.time() - start_time
     print(f"SAE loading took: {timing_stats['sae_loading']:.2f} seconds")
     
@@ -781,7 +876,8 @@ def main():
             layer_idx=layer_idx,
             sae=saes[layer_idx],
             device=args.device,
-            aggregation_mode=args.aggregation_mode
+            aggregation_mode=args.aggregation_mode,
+            model_config=model_config
         )
         layer_timing['gradient_computation'] = time.time() - grad_start
         

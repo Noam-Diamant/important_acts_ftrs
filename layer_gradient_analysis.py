@@ -32,6 +32,77 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+def get_model_config(model_name: str) -> Dict[str, str]:
+    """Get model-specific configuration.
+    
+    Args:
+        model_name: Name of the model
+    
+    Returns:
+        Dictionary with model configuration
+    """
+    model_lower = model_name.lower()
+    
+    # Determine model architecture
+    if 'qwen' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'qwen'
+        }
+    elif 'llama' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'llama'
+        }
+    elif 'mistral' in model_lower or 'zephyr' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'mistral'
+        }
+    elif 'mixtral' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'mixtral'
+        }
+    elif 'yi' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'yi'
+        }
+    elif 'gemma' in model_lower:
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'gemma'
+        }
+    else:
+        # Default to standard transformer architecture
+        return {
+            'layer_path': 'model.layers.{}.mlp',
+            'model_type': 'unknown'
+        }
+
+
+def get_layer_module(model, layer_idx: int, model_config: Dict[str, str]):
+    """Get the MLP module for a specific layer.
+    
+    Args:
+        model: The language model
+        layer_idx: Layer index
+        model_config: Model configuration dictionary
+    
+    Returns:
+        The MLP module for the specified layer
+    """
+    layer_path = model_config['layer_path'].format(layer_idx)
+    parts = layer_path.split('.')
+    
+    module = model
+    for part in parts:
+        module = getattr(module, part)
+    
+    return module
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Analyze layer activation gradients across layers')
@@ -151,7 +222,8 @@ def compute_gradients_for_layer(
     dataloader,
     layer_idx: int,
     device: str,
-    aggregation_mode: str
+    aggregation_mode: str,
+    model_config: Dict[str, str]
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
     """Compute gradients of loss w.r.t. raw MLP output activations for a specific layer.
     
@@ -162,6 +234,7 @@ def compute_gradients_for_layer(
         layer_idx: Index of the layer to analyze
         device: Device to use
         aggregation_mode: 'mean', 'mean_abs', or 'both'
+        model_config: Model configuration dictionary
     
     Returns:
         Array of aggregated gradients for each activation dimension, or dict with both if mode is 'both'
@@ -171,10 +244,6 @@ def compute_gradients_for_layer(
     # Storage for gradients across all samples
     all_gradients_signed = []
     all_gradients_abs = []
-    
-    # Get the MLP output hook name
-    # For Qwen models, the structure is model.model.layers[i].mlp
-    hook_name = f"model.layers.{layer_idx}.mlp"
     
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Layer {layer_idx}")):
         input_ids = batch['input_ids'].to(device)
@@ -194,7 +263,7 @@ def compute_gradients_for_layer(
             return output
         
         # Register hook
-        target_module = model.model.layers[layer_idx].mlp
+        target_module = get_layer_module(model, layer_idx, model_config)
         hook_handle = target_module.register_forward_hook(capture_activation_hook)
         
         try:
@@ -581,6 +650,10 @@ def main():
     
     args = parse_args()
     
+    # Get model configuration
+    model_config = get_model_config(args.model_name)
+    print(f"Model type detected: {model_config['model_type']}")
+    
     # Parse layer range
     layers = parse_layer_range(args.layers)
     print(f"Analyzing layers: {layers}")
@@ -638,7 +711,8 @@ def main():
             dataloader=dataloader,
             layer_idx=layer_idx,
             device=args.device,
-            aggregation_mode=args.aggregation_mode
+            aggregation_mode=args.aggregation_mode,
+            model_config=model_config
         )
         layer_timing['gradient_computation'] = time.time() - grad_start
         
