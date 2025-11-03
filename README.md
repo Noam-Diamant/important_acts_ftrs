@@ -136,6 +136,7 @@ Both scripts accept the following arguments:
   - `none`: No normalization (raw gradient values)
   - `sum_abs`: Sum of absolute values equals dimension size
   - `sum`: Sum of gradients equals dimension size
+  - `both`: Apply both `sum` and `sum_abs` normalizations, save separate results
   - For SAE: 65,536 features, for layer activations: 896 dimensions
 - `--save_consolidated`: Path to save consolidated .npz file (optional)
   - If provided, saves all results in a single compressed file
@@ -160,7 +161,40 @@ Each directory contains:
   - Loading instructions
 - **Timing files**: `timing_stats.json` and `timing_summary.txt`
 
-Files use `_{mode}` suffix (`_mean` or `_mean_abs`). With `both` mode, also creates `_combined` subplot figures.
+### File Naming Conventions
+
+Files use mode-specific suffixes:
+
+**Aggregation mode only:**
+- `layer_0_mean_gradients.npy` (signed mean)
+- `layer_0_mean_abs_gradients.npy` (absolute mean)
+
+**Normalization mode = `both`:**
+- `layer_0_mean_abs_norm_sum_gradients.npy` (mean_abs with sum normalization)
+- `layer_0_mean_abs_norm_sum_abs_gradients.npy` (mean_abs with sum_abs normalization)
+
+**Both aggregation AND normalization = `both` (4 files per layer):**
+- `layer_0_mean_norm_sum_gradients.npy`
+- `layer_0_mean_norm_sum_abs_gradients.npy`
+- `layer_0_mean_abs_norm_sum_gradients.npy`
+- `layer_0_mean_abs_norm_sum_abs_gradients.npy`
+
+With aggregation `both` mode, also creates `_combined` subplot figures comparing mean vs mean_abs.
+
+### Understanding Mode Combinations
+
+The two "both" options work independently and multiply the number of output variants:
+
+| Aggregation Mode | Normalization Mode | Output Files per Layer |
+|-----------------|-------------------|------------------------|
+| `mean` | `sum_abs` | 1 file: `layer_X_mean_gradients.npy` |
+| `mean` | `both` | 2 files: `layer_X_mean_norm_sum.npy`, `layer_X_mean_norm_sum_abs.npy` |
+| `both` | `sum_abs` | 2 files: `layer_X_mean.npy`, `layer_X_mean_abs.npy` |
+| `both` | `both` | **4 files**: all combinations of (mean, mean_abs) × (norm_sum, norm_sum_abs) |
+
+**Example: 10 layers with `--aggregation_mode both --normalize_gradients both`:**
+- 10 layers × 2 aggregations × 2 normalizations = **40 gradient files** total
+- Plus plots, metadata, and consolidated .npz file
 
 ## Interpreting Results
 
@@ -173,7 +207,7 @@ Files use `_{mode}` suffix (`_mean` or `_mean_abs`). With `both` mode, also crea
 
 ## Gradient Normalization
 
-The `--normalize_gradients` option provides three normalization modes to scale gradients for different analysis needs.
+The `--normalize_gradients` option provides four normalization modes to scale gradients for different analysis needs.
 
 ### Normalization Modes
 
@@ -191,6 +225,12 @@ The `--normalize_gradients` option provides three normalization modes to scale g
 - Scales gradients so `sum(gradients) = dimension_size`
 - Can amplify or diminish values based on overall gradient direction
 - Useful when gradient direction balance is important
+
+**4. `both` - Both Normalizations**
+- Applies both `sum` and `sum_abs` normalizations
+- Saves separate files for each normalization
+- Creates separate plots for each variant
+- Best when you want to compare different normalization effects side-by-side
 
 ### When to Use Each Mode
 
@@ -212,6 +252,12 @@ The `--normalize_gradients` option provides three normalization modes to scale g
 - Analyzing directional balance of gradients
 - Working with algorithms that expect this specific normalization
 
+**Use `both` when:**
+- You're exploring which normalization works best for your analysis
+- You want to compare the effects of different normalizations
+- Building models and need to evaluate both normalization approaches
+- Creating comprehensive analysis with all normalization variants
+
 ### Example Usage
 
 ```bash
@@ -228,6 +274,17 @@ python important_acts_ftrs/sae_gradient_analysis.py \
 # Sum normalization
 python important_acts_ftrs/sae_gradient_analysis.py \
     --normalize_gradients sum \
+    --save_outputs
+
+# Both normalizations - saves 2 variants
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --normalize_gradients both \
+    --save_outputs
+
+# Both normalizations + both aggregations = 4 variants total
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --normalize_gradients both \
+    --aggregation_mode both \
     --save_outputs
 ```
 
@@ -282,13 +339,23 @@ print(f"Model: {metadata['model_name']}")
 print(f"Normalization mode: {metadata['normalization_mode']}")
 print(f"Dimension sizes: {metadata['dimension_sizes']}")
 
-# Access gradient data for specific layers
+# Access gradient data for specific layers and modes
 layer_0_mean_abs = data['layer_0_mean_abs']
 layer_5_mean = data['layer_5_mean']
 
-# See all available layers
-available_layers = [key for key in data.keys() if key != 'metadata']
-print(f"Available layers: {available_layers}")
+# With normalize_gradients='both', access specific normalizations
+layer_0_mean_norm_sum = data['layer_0_mean_norm_sum']
+layer_0_mean_norm_sum_abs = data['layer_0_mean_norm_sum_abs']
+
+# With both aggregation AND normalization = 'both'
+layer_0_mean_norm_sum = data['layer_0_mean_norm_sum']
+layer_0_mean_norm_sum_abs = data['layer_0_mean_norm_sum_abs']
+layer_0_mean_abs_norm_sum = data['layer_0_mean_abs_norm_sum']
+layer_0_mean_abs_norm_sum_abs = data['layer_0_mean_abs_norm_sum_abs']
+
+# See all available layers and modes
+available_keys = [key for key in data.keys() if key != 'metadata']
+print(f"Available data: {available_keys}")
 ```
 
 ### Option 2: Use the Helper Function
@@ -321,14 +388,27 @@ Load specific layers individually (useful for large datasets):
 ```python
 import numpy as np
 
-# Load specific layer
+# Load specific layer with single aggregation/normalization
 layer_0_gradients = np.load('path/to/output_dir/layer_0_mean_abs_gradients.npy')
 layer_5_gradients = np.load('path/to/output_dir/layer_5_mean_gradients.npy')
+
+# Load specific normalization variant (when using normalize_gradients='both')
+layer_0_norm_sum = np.load('path/to/output_dir/layer_0_mean_abs_norm_sum_gradients.npy')
+layer_0_norm_sum_abs = np.load('path/to/output_dir/layer_0_mean_abs_norm_sum_abs_gradients.npy')
+
+# Load all 4 variants (when using both aggregation AND normalization = 'both')
+layer_0_mean_norm_sum = np.load('path/to/output_dir/layer_0_mean_norm_sum_gradients.npy')
+layer_0_mean_norm_sum_abs = np.load('path/to/output_dir/layer_0_mean_norm_sum_abs_gradients.npy')
+layer_0_mean_abs_norm_sum = np.load('path/to/output_dir/layer_0_mean_abs_norm_sum_gradients.npy')
+layer_0_mean_abs_norm_sum_abs = np.load('path/to/output_dir/layer_0_mean_abs_norm_sum_abs_gradients.npy')
 
 # Load metadata separately
 import json
 with open('path/to/output_dir/metadata.json', 'r') as f:
     metadata = json.load(f)
+    
+# Check normalization mode used
+print(f"Normalization mode: {metadata['analysis_config']['normalization_mode']}")
 ```
 
 ### Option 4: Custom Path with --save_consolidated
