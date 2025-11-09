@@ -24,6 +24,24 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 
+
+class TeeOutput:
+    """Writes output to both stdout and a file simultaneously."""
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, 'w', buffering=1)  # Line buffered
+    
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+    
+    def close(self):
+        self.log.close()
+
 # Add parent directory to path to import from other modules
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -1172,6 +1190,9 @@ def main():
     
     # Determine output directory
     output_dir: Optional[str] = None
+    tee_output = None
+    original_stdout = sys.stdout
+    
     if args.save_outputs:
         # Generate directory name from parameters
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1180,6 +1201,12 @@ def main():
         output_dir = f"sae_features_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         print(f"\nOutputs will be saved to: {output_dir}")
+        
+        # Set up output logging to file
+        runtime_log_file = os.path.join(output_dir, 'runtime_output.txt')
+        tee_output = TeeOutput(runtime_log_file)
+        sys.stdout = tee_output
+        print(f"Runtime output will be saved to: {runtime_log_file}")
     else:
         print("\nOutputs will NOT be saved (use --save_outputs to enable)")
         output_dir = None
@@ -1554,6 +1581,12 @@ def main():
             num_layers_processed = len(all_results)
         print(f"\nCompleted analysis for {num_layers_processed} layers")
         print("Results were NOT saved (use --save_outputs to enable saving)")
+    
+    # Cleanup: restore stdout and close log file
+    if tee_output is not None:
+        sys.stdout = original_stdout
+        tee_output.close()
+        print(f"\nRuntime output saved to: {os.path.join(output_dir, 'runtime_output.txt')}")
 
 
 if __name__ == "__main__":
