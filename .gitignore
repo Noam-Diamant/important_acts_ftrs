@@ -29,3 +29,11 @@ layer_activations_model_*/
 *.ckpt
 .cache/
 
+# Shell script
+main.sh
+
+# Output files
+*.npy
+*.err
+*.out
+
