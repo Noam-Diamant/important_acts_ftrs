@@ -144,6 +144,11 @@ def parse_args():
     parser.add_argument('--normalize_gradients', type=str, default='sum_abs',
                         choices=['none', 'sum_abs', 'sum', 'both'],
                         help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs) (default: sum_abs)')
+    parser.add_argument('--aggregate_by', type=str, default='values',
+                        choices=['gradients', 'values'],
+                        help='What to aggregate: gradients (compute loss gradients) or values (raw activation values) (default: values)')
+    parser.add_argument('--power', type=float, default=None,
+                        help='Power to raise aggregated values to before normalization (optional, default: None)')
     parser.add_argument('--save_consolidated', type=str, default=None,
                         help='Path to save consolidated .npz file with all results (optional)')
     return parser.parse_args()
@@ -284,7 +289,9 @@ def compute_gradients_for_layer(
     device: str,
     aggregation_mode: str,
     model_config: Dict[str, str],
-    normalize: str = 'none'
+    normalize: str = 'none',
+    aggregate_by: str = 'values',
+    power: Optional[float] = None
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
     """Compute gradients of loss w.r.t. raw MLP output activations for a specific layer.
     
@@ -297,13 +304,15 @@ def compute_gradients_for_layer(
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
         normalize: Normalization mode ('none', 'sum_abs', or 'sum')
+        aggregate_by: 'gradients' or 'values' - what to aggregate
+        power: Optional power to raise aggregated values to before normalization
     
     Returns:
-        Array of aggregated gradients for each activation dimension, or dict with both if mode is 'both'
+        Array of aggregated gradients/values for each activation dimension, or dict with both if mode is 'both'
     """
-    print(f"\nProcessing layer {layer_idx}")
+    print(f"\nProcessing layer {layer_idx} (aggregate_by={aggregate_by}, power={power})")
     
-    # Storage for gradients across all samples
+    # Storage for gradients/values across all samples
     all_gradients_signed = []
     all_gradients_abs = []
     
@@ -315,72 +324,112 @@ def compute_gradients_for_layer(
         if input_ids.size(0) == 0:
             continue
         
-        # Storage for this batch
-        batch_activations = []
-        
-        # Hook to capture MLP output activations
-        def capture_activation_hook(module, input, output):
-            # output shape: [batch, seq_len, hidden_dim]
-            batch_activations.append(output)
-            return output
-        
         # Register hook
         target_module = get_layer_module(model, layer_idx, model_config)
-        hook_handle = target_module.register_forward_hook(capture_activation_hook)
         
         try:
-            # Forward pass to capture activations (with gradients)
-            activations_with_grad = None
-            
-            # We need to do a custom forward pass where we can replace activations
-            def replace_activation_hook(module, input, output):
-                nonlocal activations_with_grad
-                # Enable gradients on activations
-                activations_with_grad = output.detach().clone()
-                activations_with_grad.requires_grad_(True)
-                return activations_with_grad
-            
-            # Remove the capture hook and add replace hook
-            hook_handle.remove()
-            hook_handle = target_module.register_forward_hook(replace_activation_hook)
-            
-            # Forward pass with replaced activations
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
-            loss = outputs.loss
-            
-            # Remove hook
-            hook_handle.remove()
-            
-            if activations_with_grad is None:
-                continue
-            
-            # Compute gradients
-            if loss.requires_grad and activations_with_grad.requires_grad:
-                grads = torch.autograd.grad(
-                    loss,
-                    activations_with_grad,
-                    retain_graph=False,
-                    create_graph=False
-                )
+            if aggregate_by == 'values':
+                # Simpler path: just aggregate activation values
+                batch_activations = []
                 
-                # grads[0] shape: [batch, seq_len, hidden_dim]
-                # Get gradients for valid (non-padded) positions
-                batch_size, seq_len, hidden_dim = grads[0].shape
-                mask_expanded = attention_mask.unsqueeze(-1).expand_as(grads[0])
+                def capture_activation_hook(module, input, output):
+                    batch_activations.append(output.detach().clone())
+                    return output
+                
+                hook_handle = target_module.register_forward_hook(capture_activation_hook)
+                
+                # Forward pass to capture activations
+                with torch.no_grad():
+                    _ = model(input_ids=input_ids, attention_mask=attention_mask)
+                
+                hook_handle.remove()
+                
+                if len(batch_activations) == 0:
+                    continue
+                
+                activations = batch_activations[0]  # [batch, seq_len, hidden_dim]
+                batch_size, seq_len, hidden_dim = activations.shape
+                mask_expanded = attention_mask.unsqueeze(-1).expand_as(activations)
                 
                 # Apply mask and compute mean across valid positions
-                valid_grads = grads[0] * mask_expanded
+                valid_acts = activations * mask_expanded
                 num_valid = attention_mask.sum()
                 
                 if num_valid > 0:
                     # Compute mean across batch and sequence dimensions
                     if aggregation_mode in ['mean', 'both']:
-                        grad_mean_signed = valid_grads.sum(dim=(0, 1)) / num_valid  # [hidden_dim]
-                        all_gradients_signed.append(grad_mean_signed.detach().cpu().numpy())
+                        act_mean_signed = valid_acts.sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                        all_gradients_signed.append(act_mean_signed.cpu().numpy())
                     
                     if aggregation_mode in ['mean_abs', 'both']:
-                        grad_mean_abs = torch.abs(valid_grads).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
-                        all_gradients_abs.append(grad_mean_abs.detach().cpu().numpy())
+                        act_mean_abs = torch.abs(valid_acts).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                        all_gradients_abs.append(act_mean_abs.cpu().numpy())
+            
+            else:  # aggregate_by == 'gradients'
+                # Original gradient computation path
+                # Storage for this batch
+                batch_activations = []
+                
+                # Hook to capture MLP output activations
+                def capture_activation_hook(module, input, output):
+                    # output shape: [batch, seq_len, hidden_dim]
+                    batch_activations.append(output)
+                    return output
+                
+                hook_handle = target_module.register_forward_hook(capture_activation_hook)
+                
+                # Forward pass to capture activations (with gradients)
+                activations_with_grad = None
+                
+                # We need to do a custom forward pass where we can replace activations
+                def replace_activation_hook(module, input, output):
+                    nonlocal activations_with_grad
+                    # Enable gradients on activations
+                    activations_with_grad = output.detach().clone()
+                    activations_with_grad.requires_grad_(True)
+                    return activations_with_grad
+                
+                # Remove the capture hook and add replace hook
+                hook_handle.remove()
+                hook_handle = target_module.register_forward_hook(replace_activation_hook)
+                
+                # Forward pass with replaced activations
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                loss = outputs.loss
+                
+                # Remove hook
+                hook_handle.remove()
+                
+                if activations_with_grad is None:
+                    continue
+                
+                # Compute gradients
+                if loss.requires_grad and activations_with_grad.requires_grad:
+                    grads = torch.autograd.grad(
+                        loss,
+                        activations_with_grad,
+                        retain_graph=False,
+                        create_graph=False
+                    )
+                    
+                    # grads[0] shape: [batch, seq_len, hidden_dim]
+                    # Get gradients for valid (non-padded) positions
+                    batch_size, seq_len, hidden_dim = grads[0].shape
+                    mask_expanded = attention_mask.unsqueeze(-1).expand_as(grads[0])
+                    
+                    # Apply mask and compute mean across valid positions
+                    valid_grads = grads[0] * mask_expanded
+                    num_valid = attention_mask.sum()
+                    
+                    if num_valid > 0:
+                        # Compute mean across batch and sequence dimensions
+                        if aggregation_mode in ['mean', 'both']:
+                            grad_mean_signed = valid_grads.sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_signed.append(grad_mean_signed.detach().cpu().numpy())
+                        
+                        if aggregation_mode in ['mean_abs', 'both']:
+                            grad_mean_abs = torch.abs(valid_grads).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_abs.append(grad_mean_abs.detach().cpu().numpy())
         
         except Exception as e:
             print(f"Error processing batch {batch_idx} for layer {layer_idx}: {e}")
@@ -396,9 +445,15 @@ def compute_gradients_for_layer(
         mean_gradients = np.mean(all_gradients_signed, axis=0)
         dimension_size = len(mean_gradients)
         
-        print(f"Layer {layer_idx} (before normalization): Mean gradient = {mean_gradients.mean():.6f}, "
+        print(f"Layer {layer_idx} (before power/normalization): Mean gradient = {mean_gradients.mean():.6f}, "
               f"Max gradient = {np.abs(mean_gradients).max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
+        
+        # Apply power transformation if specified
+        if power is not None:
+            mean_gradients = np.power(np.abs(mean_gradients), power) * np.sign(mean_gradients)
+            print(f"Layer {layer_idx} (after power={power}): Mean = {mean_gradients.mean():.6f}, "
+                  f"Max = {np.abs(mean_gradients).max():.6f}")
         
         if normalize == 'none':
             return mean_gradients
@@ -425,9 +480,15 @@ def compute_gradients_for_layer(
         mean_gradients = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients)
         
-        print(f"Layer {layer_idx} (before normalization): Mean abs gradient = {mean_gradients.mean():.6f}, "
+        print(f"Layer {layer_idx} (before power/normalization): Mean abs gradient = {mean_gradients.mean():.6f}, "
               f"Max gradient = {mean_gradients.max():.6f}, "
               f"Std gradient = {mean_gradients.std():.6f}")
+        
+        # Apply power transformation if specified
+        if power is not None:
+            mean_gradients = np.power(mean_gradients, power)
+            print(f"Layer {layer_idx} (after power={power}): Mean = {mean_gradients.mean():.6f}, "
+                  f"Max = {mean_gradients.max():.6f}")
         
         if normalize == 'none':
             return mean_gradients
@@ -455,11 +516,21 @@ def compute_gradients_for_layer(
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients_signed)
         
-        print(f"Layer {layer_idx} (before normalization):")
+        print(f"Layer {layer_idx} (before power/normalization):")
         print(f"  Mean gradient (signed) = {mean_gradients_signed.mean():.6f}, "
               f"Max = {np.abs(mean_gradients_signed).max():.6f}, Std = {mean_gradients_signed.std():.6f}")
         print(f"  Mean gradient (abs) = {mean_gradients_abs.mean():.6f}, "
               f"Max = {mean_gradients_abs.max():.6f}, Std = {mean_gradients_abs.std():.6f}")
+        
+        # Apply power transformation if specified
+        if power is not None:
+            mean_gradients_signed = np.power(np.abs(mean_gradients_signed), power) * np.sign(mean_gradients_signed)
+            mean_gradients_abs = np.power(mean_gradients_abs, power)
+            print(f"Layer {layer_idx} (after power={power}):")
+            print(f"  Mean gradient (signed): Mean = {mean_gradients_signed.mean():.6f}, "
+                  f"Max = {np.abs(mean_gradients_signed).max():.6f}")
+            print(f"  Mean gradient (abs): Mean = {mean_gradients_abs.mean():.6f}, "
+                  f"Max = {mean_gradients_abs.max():.6f}")
         
         if normalize == 'none':
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
@@ -829,6 +900,8 @@ def save_consolidated_results(
         'layers': layers,
         'aggregation_mode': aggregation_mode,
         'normalization_mode': args.normalize_gradients,
+        'aggregate_by': args.aggregate_by,
+        'power': args.power,
         'device': args.device,
         'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
     }
@@ -891,6 +964,8 @@ def create_enhanced_metadata(
             'layers': layers,
             'aggregation_mode': aggregation_mode,
             'normalization_mode': args.normalize_gradients,
+            'aggregate_by': args.aggregate_by,
+            'power': args.power,
         },
         'timing_stats': timing_stats,
         'per_layer_timing': layer_timings,
@@ -1114,7 +1189,9 @@ def main():
             device=args.device,
             aggregation_mode=args.aggregation_mode,
             model_config=model_config,
-            normalize=args.normalize_gradients
+            normalize=args.normalize_gradients,
+            aggregate_by=args.aggregate_by,
+            power=args.power
         )
         layer_timing['gradient_computation'] = time.time() - grad_start
         

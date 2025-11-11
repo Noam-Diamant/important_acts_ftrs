@@ -23,11 +23,24 @@ Both tools automatically detect and support:
 
 The scripts automatically configure layer paths based on model architecture.
 
-## Aggregation Modes
+## Analysis Types
 
-- **`mean_abs`** (default): Mean absolute gradient - shows magnitude of effect
-- **`mean`**: Signed mean gradient - shows directional effect (positive/negative)
+### Aggregate By: Values vs Gradients
+
+- **`values`** (default): Aggregates raw activation/feature values - faster, simpler, no loss computation
+- **`gradients`**: Aggregates loss gradients w.r.t. activations/features - shows impact on model loss
+
+### Aggregation Modes
+
+- **`mean_abs`** (default): Mean absolute values - shows magnitude of effect
+- **`mean`**: Signed mean values - shows directional effect (positive/negative)
 - **`both`**: Computes both modes, creates separate + combined comparison plots
+
+### Power Transformation (Optional)
+
+- Apply power transformation after aggregation, before normalization
+- Example: `--power 2.0` squares the aggregated values to emphasize large values
+- Preserves sign for signed aggregation modes
 
 ## Usage
 
@@ -128,14 +141,20 @@ Both scripts accept the following arguments:
 - `--layers`: Layer range to analyze (default: `0-23`)
   - Format: `"0-23"` for range or `"0,5,10"` for specific layers
 - `--device`: Device to use (default: `cuda`)
-- `--aggregation_mode`: Gradient aggregation mode (default: `mean_abs`)
+- `--aggregate_by`: What to aggregate (default: `values`)
+  - `values`: Raw activation/feature values (faster, no loss computation)
+  - `gradients`: Loss gradients w.r.t. activations/features (shows impact on loss)
+- `--aggregation_mode`: How to aggregate (default: `mean_abs`)
   - `mean`: Signed mean (shows directional effect)
   - `mean_abs`: Mean absolute value (shows magnitude)
   - `both`: Compute and plot both modes
+- `--power`: Power transformation to apply after aggregation (optional, default: None)
+  - Example: `2.0` squares values to emphasize larger ones
+  - Preserves sign for signed modes
 - `--normalize_gradients`: Normalization mode (default: `sum_abs`)
-  - `none`: No normalization (raw gradient values)
+  - `none`: No normalization (raw values)
   - `sum_abs`: Sum of absolute values equals dimension size
-  - `sum`: Sum of gradients equals dimension size
+  - `sum`: Sum of values equals dimension size
   - `both`: Apply both `sum` and `sum_abs` normalizations, save separate results
   - For SAE: 65,536 features, for layer activations: 896 dimensions
 - `--save_consolidated`: Path to save consolidated .npz file (optional)
@@ -198,10 +217,21 @@ The two "both" options work independently and multiply the number of output vari
 
 ## Interpreting Results
 
+### Value-Based Analysis (`--aggregate_by values`)
+
+**High values**: Dimension is highly activated across samples  
+**Low values**: Dimension is rarely activated
+
+**`mean_abs`**: Shows which dimensions are most active (always positive)  
+**`mean`**: Shows average activation (can be positive or negative)  
+**High `mean_abs` but low `mean`**: Activation is strong but bidirectional (both positive and negative)
+
+### Gradient-Based Analysis (`--aggregate_by gradients`)
+
 **High gradient magnitude**: Dimension strongly affects loss  
 **Low gradient magnitude**: Minimal impact on loss
 
-**`mean_abs`**: Shows which dimensions matter most (always positive)  
+**`mean_abs`**: Shows which dimensions matter most for loss (always positive)  
 **`mean`**: Shows direction of effect (positive = increases loss, negative = decreases loss)  
 **High `mean_abs` but low `mean`**: Effect is strong but context-dependent
 
@@ -319,6 +349,166 @@ dimension_size = 3
 # Result: [3.75, -2.25, 1.5]  → sum = 3.0 ✓
 ```
 
+## Values vs Gradients Analysis
+
+### When to Use `--aggregate_by values` (Default)
+
+**Use value-based analysis when:**
+- You want to understand which dimensions are naturally active
+- You're doing exploratory analysis of activation patterns
+- You want faster execution (no loss computation or backpropagation)
+- You're identifying "hot" features/dimensions that fire frequently
+- You're building activation-based representations or embeddings
+- You don't need causal information about loss impact
+
+**Example:**
+```bash
+# Fast analysis of which SAE features are most active
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --aggregate_by values \
+    --aggregation_mode mean_abs \
+    --save_outputs
+```
+
+### When to Use `--aggregate_by gradients`
+
+**Use gradient-based analysis when:**
+- You want to understand which dimensions affect model loss
+- You're doing mechanistic interpretability (causal analysis)
+- You want to identify dimensions that matter for model predictions
+- You're building loss-informed pruning or compression strategies
+- You need to know the direction of effect (increases/decreases loss)
+- You're studying how interventions affect model behavior
+
+**Example:**
+```bash
+# Analyze which features causally affect loss
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --aggregate_by gradients \
+    --aggregation_mode both \
+    --save_outputs
+```
+
+### Comparison: Values vs Gradients
+
+| Aspect | Values | Gradients |
+|--------|--------|-----------|
+| **Speed** | Fast (no backprop) | Slower (requires backprop) |
+| **Memory** | Low | Higher |
+| **Interpretation** | Activation frequency/magnitude | Causal effect on loss |
+| **Use Case** | Exploratory, activation patterns | Mechanistic, causal analysis |
+| **Best for** | Understanding what fires | Understanding what matters |
+
+### Example: Different Results
+
+A dimension can have:
+- **High values, low gradients**: Fires frequently but doesn't affect loss much
+- **Low values, high gradients**: Rarely fires but has strong effect when it does
+- **High both**: Important and frequently activated
+- **Low both**: Not important and rarely activated
+
+## Power Transformation
+
+The `--power` option applies an element-wise power transformation **after aggregation** but **before normalization**.
+
+### When to Use Power Transformation
+
+**Use power transformation when:**
+- You want to emphasize large values and de-emphasize small ones
+- You're identifying the most important dimensions (outlier detection)
+- You want to apply non-linear scaling to your analysis
+- You're building weighted representations where large values matter more
+
+### Common Power Values
+
+- **`--power 2.0`**: Square values (quadratic emphasis)
+  - Good for emphasizing outliers
+  - Common in many ML applications
+- **`--power 0.5`**: Square root (compression)
+  - Reduces the impact of very large values
+  - Makes distribution more uniform
+- **`--power 3.0`**: Cubic (strong emphasis)
+  - Very strong emphasis on largest values
+  - Useful for identifying clear winners
+
+### Examples
+
+```bash
+# Emphasize important features with squaring
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --aggregate_by values \
+    --power 2.0 \
+    --save_outputs
+
+# Strong emphasis on outliers
+python important_acts_ftrs/layer_gradient_analysis.py \
+    --aggregate_by gradients \
+    --power 3.0 \
+    --aggregation_mode mean_abs \
+    --save_outputs
+
+# Compress large values
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --aggregate_by values \
+    --power 0.5 \
+    --save_outputs
+```
+
+### Power Transformation with Signed Values
+
+For signed aggregation modes (`aggregation_mode=mean`), power is applied while preserving sign:
+```python
+# For signed mean mode
+result = sign(value) * |value|^power
+```
+
+For absolute aggregation modes (`aggregation_mode=mean_abs`), power is applied directly:
+```python
+# For mean_abs mode (values already positive)
+result = value^power
+```
+
+### Example with Numbers
+
+```python
+# Original aggregated values
+values = [10.0, 5.0, 1.0, -8.0]
+
+# Power = 2.0, signed mode
+# Result: [100.0, 25.0, 1.0, -64.0]
+# Large values emphasized, signs preserved
+
+# Power = 0.5, signed mode  
+# Result: [3.16, 2.24, 1.0, -2.83]
+# Large values compressed, signs preserved
+
+# Power = 2.0, mean_abs mode (all positive)
+values_abs = [10.0, 5.0, 1.0, 8.0]
+# Result: [100.0, 25.0, 1.0, 64.0]
+```
+
+### Complete Example: All Features Together
+
+```bash
+# Comprehensive analysis:
+# - Aggregate raw values (faster)
+# - Square them to emphasize important ones
+# - Use both signed and absolute aggregation
+# - Apply both normalizations for comparison
+python important_acts_ftrs/sae_gradient_analysis.py \
+    --aggregate_by values \
+    --power 2.0 \
+    --aggregation_mode both \
+    --normalize_gradients both \
+    --num_samples 1000 \
+    --save_outputs
+
+# This creates 4 variants per layer:
+# - mean_norm_sum, mean_norm_sum_abs
+# - mean_abs_norm_sum, mean_abs_norm_sum_abs
+# All with power=2.0 applied before normalization
+```
+
 ## Loading Saved Results
 
 Results can be loaded in multiple ways depending on your needs:
@@ -336,6 +526,8 @@ data = np.load('path/to/consolidated_results.npz', allow_pickle=True)
 # Access metadata
 metadata = data['metadata'].item()
 print(f"Model: {metadata['model_name']}")
+print(f"Aggregate by: {metadata['aggregate_by']}")
+print(f"Power: {metadata['power']}")
 print(f"Normalization mode: {metadata['normalization_mode']}")
 print(f"Dimension sizes: {metadata['dimension_sizes']}")
 
@@ -407,8 +599,11 @@ import json
 with open('path/to/output_dir/metadata.json', 'r') as f:
     metadata = json.load(f)
     
-# Check normalization mode used
-print(f"Normalization mode: {metadata['analysis_config']['normalization_mode']}")
+# Check analysis configuration
+config = metadata['analysis_config']
+print(f"Aggregate by: {config['aggregate_by']}")
+print(f"Power: {config['power']}")
+print(f"Normalization mode: {config['normalization_mode']}")
 ```
 
 ### Option 4: Custom Path with --save_consolidated
