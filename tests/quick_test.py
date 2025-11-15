@@ -111,7 +111,10 @@ def run_test(args):
                       (d.startswith('layer_activations_') or d.startswith('sae_features_'))]
         
         if output_dirs:
-            latest_dir = sorted(output_dirs)[-1]
+            # Sort by modification time to get the most recently created directory
+            output_dirs_with_time = [(d, (Path(__file__).parent / d).stat().st_mtime) 
+                                     for d in output_dirs]
+            latest_dir = max(output_dirs_with_time, key=lambda x: x[1])[0]
             full_path = Path(__file__).parent / latest_dir
             
             print(f"\n📁 Output directory: {latest_dir}")
