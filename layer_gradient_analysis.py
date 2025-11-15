@@ -147,11 +147,26 @@ def parse_args():
     parser.add_argument('--aggregate_by', type=str, default='values',
                         choices=['gradients', 'values'],
                         help='What to aggregate: gradients (compute loss gradients) or values (raw activation values) (default: values)')
-    parser.add_argument('--power', type=float, default=None,
-                        help='Power to raise aggregated values to before normalization (optional, default: None)')
+    parser.add_argument('--power', type=str, default=None,
+                        help='Power to raise aggregated values to before normalization. Can be a single value (e.g., "2.0") or comma-separated list (e.g., "0.5,1.0,2.0"). If list provided, only first value is used. (optional, default: None)')
     parser.add_argument('--save_consolidated', type=str, default=None,
                         help='Path to save consolidated .npz file with all results (optional)')
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Parse power argument - convert to single value or None
+    if args.power is not None:
+        power_values = [float(p.strip()) for p in args.power.split(',')]
+        if len(power_values) > 1:
+            # Multiple values provided - store for later, will use first one
+            args.power_list = power_values
+            args.power = power_values[0]
+        else:
+            args.power_list = None
+            args.power = power_values[0]
+    else:
+        args.power_list = None
+    
+    return args
 
 
 def parse_layer_range(layer_spec: str) -> List[int]:
@@ -1107,6 +1122,11 @@ def main():
     
     args = parse_args()
     
+    # Print power info if multiple values were provided
+    if args.power_list is not None:
+        print(f"Multiple power values provided: {args.power_list}")
+        print(f"Using first power value: {args.power}")
+    
     # Get model configuration
     model_config = get_model_config(args.model_name)
     print(f"Model type detected: {model_config['model_type']}")
@@ -1126,7 +1146,8 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_safe = args.model_name.replace("/", "_")
         layers_safe = args.layers.replace("-", "to").replace(",", "_")
-        output_dir = f"layer_activations_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}_{timestamp}"
+        power_str = f"_power_{args.power}" if args.power is not None else ""
+        output_dir = f"layer_activations_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}{power_str}_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         print(f"\nOutputs will be saved to: {output_dir}")
         

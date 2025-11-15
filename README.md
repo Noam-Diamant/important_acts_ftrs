@@ -39,8 +39,11 @@ The scripts automatically configure layer paths based on model architecture.
 ### Power Transformation (Optional)
 
 - Apply power transformation after aggregation, before normalization
+- Can specify single value (e.g., `--power 2.0`) or comma-separated list (e.g., `--power 0.5,1.0,2.0`)
+- When multiple values provided, only the first value is used (infrastructure for future multi-power analysis)
 - Example: `--power 2.0` squares the aggregated values to emphasize large values
 - Preserves sign for signed aggregation modes
+- Power value is included in output directory name when specified
 
 ## Usage
 
@@ -452,6 +455,14 @@ python important_acts_ftrs/sae_gradient_analysis.py \
     --aggregate_by values \
     --power 0.5 \
     --save_outputs
+
+# Specify multiple power values (uses first value)
+python important_acts_ftrs/layer_gradient_analysis.py \
+    --aggregate_by values \
+    --power "0.5,1.0,2.0" \
+    --save_outputs
+# Output: "Multiple power values provided: [0.5, 1.0, 2.0]"
+# Output: "Using first power value: 0.5"
 ```
 
 ### Power Transformation with Signed Values
