@@ -1147,7 +1147,7 @@ def main():
         model_safe = args.model_name.replace("/", "_")
         layers_safe = args.layers.replace("-", "to").replace(",", "_")
         power_str = f"_power_{args.power}" if args.power is not None else ""
-        output_dir = f"layer_activations_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}{power_str}_{timestamp}"
+        output_dir = f"layer_activations_model_{model_safe}_num_samples_{args.num_samples}_batch_size_{args.batch_size}_layers_{layers_safe}_agg_{args.aggregate_by}{power_str}_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         print(f"\nOutputs will be saved to: {output_dir}")
         
