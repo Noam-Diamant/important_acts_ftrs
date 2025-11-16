@@ -13,6 +13,163 @@ import argparse
 import numpy as np
 from pathlib import Path
 import sys
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+
+
+def create_histogram(weights: np.ndarray, title: str, output_path: Path):
+    """Create and save histogram plot for weight values.
+    
+    Args:
+        weights: Array of weight values
+        title: Title for the plot
+        output_path: Path to save the plot
+    """
+    plt.figure(figsize=(12, 6))
+    
+    # Create histogram
+    plt.hist(weights, bins=100, alpha=0.7, color='blue', edgecolor='black')
+    
+    # Add statistics
+    mean_val = weights.mean()
+    max_val = np.abs(weights).max()
+    std_val = weights.std()
+    
+    plt.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.6f}')
+    
+    plt.xlabel('Weight Value', fontsize=12)
+    plt.ylabel('Number of Dimensions', fontsize=12)
+    plt.title(f'{title}\nMax: {max_val:.6f}, Mean: {mean_val:.6f}, Std: {std_val:.6f}',
+              fontsize=14)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Save plot
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  Saved histogram to {output_path}")
+
+
+def create_scatter_plot(weights: np.ndarray, title: str, output_path: Path):
+    """Create and save scatter plot showing weight per dimension.
+    
+    Args:
+        weights: Array of weight values (one per dimension)
+        title: Title for the plot
+        output_path: Path to save the plot
+    """
+    plt.figure(figsize=(14, 6))
+    
+    num_dims = len(weights)
+    dim_indices = np.arange(num_dims)
+    
+    # Plot weight per dimension (scatter only, no line)
+    plt.scatter(dim_indices, weights, s=3, alpha=0.6, color='blue')
+    
+    # Add statistics
+    mean_val = weights.mean()
+    max_val = np.abs(weights).max()
+    std_val = weights.std()
+    
+    # Highlight top dimensions
+    top_k = min(20, num_dims)
+    top_indices = np.argsort(np.abs(weights))[-top_k:]
+    plt.scatter(top_indices, weights[top_indices], 
+                s=80, color='red', alpha=0.8, 
+                label=f'Top {top_k} dimensions', zorder=5, marker='*')
+    
+    plt.axhline(mean_val, color='green', linestyle='--', linewidth=1.5, 
+                label=f'Mean: {mean_val:.6f}', alpha=0.7)
+    
+    plt.xlabel('Dimension Index', fontsize=12)
+    plt.ylabel('Weight Value', fontsize=12)
+    plt.title(f'{title}\nTotal Dimensions: {num_dims}, Max: {max_val:.6f}, Mean: {mean_val:.6f}, Std: {std_val:.6f}',
+              fontsize=14)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Save plot
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  Saved scatter plot to {output_path}")
+
+
+def create_comparison_plots(ones_weights: np.ndarray, input_weights: np.ndarray, 
+                           combined_weights: np.ndarray, lambda_value: float, 
+                           output_dir: Path, base_name: str):
+    """Create comparison plots showing all three weight distributions.
+    
+    Args:
+        ones_weights: Ones weight array
+        input_weights: Input weight array
+        combined_weights: Combined weight array
+        lambda_value: Lambda mixing coefficient
+        output_dir: Directory to save plots
+        base_name: Base name for output files
+    """
+    # Histogram comparison
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 6))
+    
+    weights_list = [
+        (ones_weights, 'Ones Weights', ax1),
+        (input_weights, 'Input Weights', ax2),
+        (combined_weights, f'Combined (λ={lambda_value})', ax3)
+    ]
+    
+    for weights, title, ax in weights_list:
+        ax.hist(weights, bins=100, alpha=0.7, color='blue', edgecolor='black')
+        mean_val = weights.mean()
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.6f}')
+        ax.set_xlabel('Weight Value', fontsize=12)
+        ax.set_ylabel('Count', fontsize=12)
+        ax.set_title(f'{title}\nMean: {mean_val:.6f}, Max: {np.abs(weights).max():.6f}', fontsize=12)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+    fig.suptitle(f'Weight Distribution Comparison (λ={lambda_value})', fontsize=16)
+    plt.tight_layout()
+    
+    output_path = output_dir / f'{base_name}_lambda_{lambda_value}_comparison_hist.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved comparison histogram to {output_path}")
+    
+    # Scatter comparison
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 6))
+    
+    num_dims = len(ones_weights)
+    dim_indices = np.arange(num_dims)
+    
+    for weights, title, ax in weights_list:
+        ax.scatter(dim_indices, weights, s=3, alpha=0.6, color='blue')
+        mean_val = weights.mean()
+        
+        # Highlight top dimensions
+        top_k = min(20, num_dims)
+        top_indices = np.argsort(np.abs(weights))[-top_k:]
+        ax.scatter(top_indices, weights[top_indices], 
+                  s=80, color='red', alpha=0.8, 
+                  label=f'Top {top_k}', zorder=5, marker='*')
+        
+        ax.axhline(mean_val, color='green', linestyle='--', linewidth=1.5, 
+                  label=f'Mean: {mean_val:.6f}', alpha=0.7)
+        
+        ax.set_xlabel('Dimension Index', fontsize=12)
+        ax.set_ylabel('Weight Value', fontsize=12)
+        ax.set_title(f'{title}\nMean: {mean_val:.6f}, Max: {np.abs(weights).max():.6f}', fontsize=12)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+    fig.suptitle(f'Weight Scatter Comparison (λ={lambda_value})', fontsize=16)
+    plt.tight_layout()
+    
+    output_path = output_dir / f'{base_name}_lambda_{lambda_value}_comparison_scatter.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved comparison scatter plot to {output_path}")
 
 
 def parse_args():
@@ -100,11 +257,40 @@ def main():
     print(f"  Input weights    - Min: {input_weights.min():.6f}, Max: {input_weights.max():.6f}, Mean: {input_weights.mean():.6f}")
     print(f"  Combined weights - Min: {combined_weights.min():.6f}, Max: {combined_weights.max():.6f}, Mean: {combined_weights.mean():.6f}")
     
+    # Generate visualizations
+    print("\nGenerating visualizations...")
+    output_dir = weights_path.parent
+    base_name = weights_path.stem
+    
+    # Individual histograms
+    print("  Creating individual histograms...")
+    create_histogram(ones_weights, 'Ones Weights Distribution', 
+                    output_dir / f'{base_name}_lambda_{lambda_value}_ones_hist.png')
+    create_histogram(input_weights, 'Input Weights Distribution', 
+                    output_dir / f'{base_name}_lambda_{lambda_value}_input_hist.png')
+    create_histogram(combined_weights, f'Combined Weights Distribution (λ={lambda_value})', 
+                    output_dir / f'{base_name}_lambda_{lambda_value}_combined_hist.png')
+    
+    # Individual scatter plots
+    print("  Creating individual scatter plots...")
+    create_scatter_plot(ones_weights, 'Ones Weights Scatter', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_ones_scatter.png')
+    create_scatter_plot(input_weights, 'Input Weights Scatter', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_input_scatter.png')
+    create_scatter_plot(combined_weights, f'Combined Weights Scatter (λ={lambda_value})', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_combined_scatter.png')
+    
+    # Comparison plots
+    print("  Creating comparison plots...")
+    create_comparison_plots(ones_weights, input_weights, combined_weights, 
+                           lambda_value, output_dir, base_name)
+    
     print("\n" + "="*70)
     print("SUCCESS: Combined weights saved!")
     print("="*70)
     print(f"Output file: {output_path}")
     print(f"File size:   {output_path.stat().st_size / 1024:.2f} KB")
+    print(f"\nVisualization plots saved to: {output_dir}")
 
 
 if __name__ == "__main__":
