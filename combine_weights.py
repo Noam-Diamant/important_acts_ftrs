@@ -97,10 +97,10 @@ def create_scatter_plot(weights: np.ndarray, title: str, output_path: Path):
     print(f"  Saved scatter plot to {output_path}")
 
 
-def create_comparison_plots(ones_weights: np.ndarray, input_weights: np.ndarray, 
-                           combined_weights: np.ndarray, lambda_value: float, 
-                           output_dir: Path, base_name: str):
-    """Create comparison plots showing all three weight distributions.
+def create_comparison_histogram(ones_weights: np.ndarray, input_weights: np.ndarray, 
+                               combined_weights: np.ndarray, lambda_value: float, 
+                               output_dir: Path, base_name: str):
+    """Create comparison histogram showing all three weight distributions.
     
     Args:
         ones_weights: Ones weight array
@@ -136,40 +136,6 @@ def create_comparison_plots(ones_weights: np.ndarray, input_weights: np.ndarray,
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  Saved comparison histogram to {output_path}")
-    
-    # Scatter comparison
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 6))
-    
-    num_dims = len(ones_weights)
-    dim_indices = np.arange(num_dims)
-    
-    for weights, title, ax in weights_list:
-        ax.scatter(dim_indices, weights, s=3, alpha=0.6, color='blue')
-        mean_val = weights.mean()
-        
-        # Highlight top dimensions
-        top_k = min(20, num_dims)
-        top_indices = np.argsort(np.abs(weights))[-top_k:]
-        ax.scatter(top_indices, weights[top_indices], 
-                  s=80, color='red', alpha=0.8, 
-                  label=f'Top {top_k}', zorder=5, marker='*')
-        
-        ax.axhline(mean_val, color='green', linestyle='--', linewidth=1.5, 
-                  label=f'Mean: {mean_val:.6f}', alpha=0.7)
-        
-        ax.set_xlabel('Dimension Index', fontsize=12)
-        ax.set_ylabel('Weight Value', fontsize=12)
-        ax.set_title(f'{title}\nMean: {mean_val:.6f}, Max: {np.abs(weights).max():.6f}', fontsize=12)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-    
-    fig.suptitle(f'Weight Scatter Comparison (λ={lambda_value})', fontsize=16)
-    plt.tight_layout()
-    
-    output_path = output_dir / f'{base_name}_lambda_{lambda_value}_comparison_scatter.png'
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  Saved comparison scatter plot to {output_path}")
 
 
 def parse_args():
@@ -267,13 +233,23 @@ def main():
     print(f"  Combined weights - Min: {combined_weights.min():.6f}, Max: {combined_weights.max():.6f}, Mean: {combined_weights.mean():.6f}")
     
     # Generate visualizations
-    print("\nGenerating comparison plots...")
+    print("\nGenerating visualizations...")
     output_dir = weights_path.parent
     base_name = weights_path.stem
     
-    # Comparison plots (3-panel histogram and scatter)
-    create_comparison_plots(ones_weights, input_weights, combined_weights, 
-                           lambda_value, output_dir, base_name)
+    # Comparison histogram (3-panel)
+    print("  Creating comparison histogram...")
+    create_comparison_histogram(ones_weights, input_weights, combined_weights, 
+                                lambda_value, output_dir, base_name)
+    
+    # Separate scatter plots
+    print("  Creating individual scatter plots...")
+    create_scatter_plot(ones_weights, 'Ones Weights Scatter', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_ones_scatter.png')
+    create_scatter_plot(input_weights, 'Input Weights Scatter', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_input_scatter.png')
+    create_scatter_plot(combined_weights, f'Combined Weights Scatter (λ={lambda_value})', 
+                       output_dir / f'{base_name}_lambda_{lambda_value}_combined_scatter.png')
     
     print("\n" + "="*70)
     print("SUCCESS: Combined weights saved!")
