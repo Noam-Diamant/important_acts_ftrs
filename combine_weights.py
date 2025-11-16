@@ -249,7 +249,16 @@ def main():
     
     # Save combined weights
     print(f"Saving combined weights to: {output_path}")
-    np.save(output_path, combined_weights)
+    try:
+        np.save(output_path, combined_weights)
+        # Verify file was created
+        if output_path.exists():
+            print(f"✓ Combined weights file created successfully")
+        else:
+            print(f"✗ Warning: File was not created at {output_path}")
+    except Exception as e:
+        print(f"✗ Error saving combined weights: {e}")
+        sys.exit(1)
     
     # Print statistics
     print("\nStatistics:")
@@ -258,30 +267,11 @@ def main():
     print(f"  Combined weights - Min: {combined_weights.min():.6f}, Max: {combined_weights.max():.6f}, Mean: {combined_weights.mean():.6f}")
     
     # Generate visualizations
-    print("\nGenerating visualizations...")
+    print("\nGenerating comparison plots...")
     output_dir = weights_path.parent
     base_name = weights_path.stem
     
-    # Individual histograms
-    print("  Creating individual histograms...")
-    create_histogram(ones_weights, 'Ones Weights Distribution', 
-                    output_dir / f'{base_name}_lambda_{lambda_value}_ones_hist.png')
-    create_histogram(input_weights, 'Input Weights Distribution', 
-                    output_dir / f'{base_name}_lambda_{lambda_value}_input_hist.png')
-    create_histogram(combined_weights, f'Combined Weights Distribution (λ={lambda_value})', 
-                    output_dir / f'{base_name}_lambda_{lambda_value}_combined_hist.png')
-    
-    # Individual scatter plots
-    print("  Creating individual scatter plots...")
-    create_scatter_plot(ones_weights, 'Ones Weights Scatter', 
-                       output_dir / f'{base_name}_lambda_{lambda_value}_ones_scatter.png')
-    create_scatter_plot(input_weights, 'Input Weights Scatter', 
-                       output_dir / f'{base_name}_lambda_{lambda_value}_input_scatter.png')
-    create_scatter_plot(combined_weights, f'Combined Weights Scatter (λ={lambda_value})', 
-                       output_dir / f'{base_name}_lambda_{lambda_value}_combined_scatter.png')
-    
-    # Comparison plots
-    print("  Creating comparison plots...")
+    # Comparison plots (3-panel histogram and scatter)
     create_comparison_plots(ones_weights, input_weights, combined_weights, 
                            lambda_value, output_dir, base_name)
     
