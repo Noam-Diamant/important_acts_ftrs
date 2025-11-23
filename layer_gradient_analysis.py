@@ -145,8 +145,8 @@ def parse_args():
                         choices=['none', 'sum_abs', 'sum', 'both', 'all'],
                         help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs), all (apply all three: none, sum_abs, and sum) (default: sum_abs)')
     parser.add_argument('--aggregate_by', type=str, default='values',
-                        choices=['gradients', 'values', 'hessian_diagonal'],
-                        help='What to aggregate: gradients (compute loss gradients), values (raw activation values), or hessian_diagonal (diagonal of Hessian matrix - second derivatives) (default: values)')
+                        choices=['gradients', 'values', 'hessian_diagonal_sum', 'hessian_diagonal'],
+                        help='What to aggregate: gradients (compute loss gradients), values (raw activation values), hessian_diagonal_sum (fast approximation using sum of gradients), or hessian_diagonal (true second derivatives - slower but accurate) (default: values)')
     parser.add_argument('--power', type=str, default=None,
                         help='Power to raise aggregated values to before normalization. Can be a single value (e.g., "2.0") or comma-separated list (e.g., "0.5,1.0,2.0"). If list provided, only first value is used. (optional, default: None)')
     parser.add_argument('--save_consolidated', type=str, default=None,
@@ -324,7 +324,8 @@ def compute_layer_aggregates(
     This function computes either:
     - Gradients of loss w.r.t. raw MLP output activations (when aggregate_by='gradients')
     - Raw activation values themselves (when aggregate_by='values')
-    - Diagonal of Hessian matrix (second derivatives) (when aggregate_by='hessian_diagonal')
+    - Diagonal of Hessian matrix approximation (when aggregate_by='hessian_diagonal_sum')
+    - True diagonal of Hessian matrix (second derivatives) (when aggregate_by='hessian_diagonal')
     
     Args:
         model: Language model
@@ -335,7 +336,7 @@ def compute_layer_aggregates(
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
         normalize: Normalization mode ('none', 'sum_abs', or 'sum')
-        aggregate_by: 'gradients' (first derivatives), 'values' (raw activations), or 'hessian_diagonal' (second derivatives)
+        aggregate_by: 'gradients' (first derivatives), 'values' (raw activations), 'hessian_diagonal_sum' (fast approximation), or 'hessian_diagonal' (true second derivatives)
         power: Optional power to raise aggregated values to before normalization
     
     Returns:
@@ -465,8 +466,10 @@ def compute_layer_aggregates(
                             grad_mean_abs = torch.abs(valid_grads).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
                             all_gradients_abs.append(grad_mean_abs.detach().cpu().numpy())
             
-            else:  # aggregate_by == 'hessian_diagonal'
-                # Hessian diagonal computation (second derivatives)
+            elif aggregate_by == 'hessian_diagonal_sum':
+                # Hessian diagonal approximation (fast but approximate)
+                # Computes grad(sum(first_grad), activations) which gives curvature information
+                # but not the true diagonal Hessian d²L/d(act_i)²
                 activations_with_grad = None
                 
                 # Hook to replace activations with gradient-enabled version
@@ -488,7 +491,7 @@ def compute_layer_aggregates(
                 if activations_with_grad is None:
                     continue
                 
-                # Compute Hessian diagonal efficiently
+                # Compute Hessian diagonal approximation efficiently
                 if loss.requires_grad and activations_with_grad.requires_grad:
                     # First, compute gradient with create_graph=True and retain_graph=True
                     # We need retain_graph=True because we'll do a second backward pass
@@ -505,9 +508,8 @@ def compute_layer_aggregates(
                     mask_expanded = attention_mask.unsqueeze(-1).expand_as(first_grad)
                     
                     # Compute Hessian-based curvature information
-                    # NOTE: This computes grad(sum(first_grad), activations) which gives us
+                    # This computes grad(sum(first_grad), activations) which gives us
                     # curvature information but not the true diagonal Hessian d²L/d(act_i)²
-                    # True diagonal would require per-dimension computation (very slow)
                     # This approximation captures how activations affect gradient magnitude
                     hessian_diag = torch.autograd.grad(
                         outputs=first_grad,
@@ -521,6 +523,100 @@ def compute_layer_aggregates(
                     # If gradient is None (unused), create zeros
                     if hessian_diag is None:
                         hessian_diag = torch.zeros_like(activations_with_grad)
+                    
+                    # Apply mask and compute mean across valid positions
+                    valid_hessian = hessian_diag * mask_expanded
+                    num_valid = attention_mask.sum()
+                    
+                    if num_valid > 0:
+                        # Compute mean across batch and sequence dimensions
+                        if aggregation_mode in ['mean', 'both']:
+                            hess_mean_signed = valid_hessian.sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_signed.append(hess_mean_signed.detach().cpu().numpy())
+                        
+                        if aggregation_mode in ['mean_abs', 'both']:
+                            hess_mean_abs = torch.abs(valid_hessian).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_abs.append(hess_mean_abs.detach().cpu().numpy())
+            
+            else:  # aggregate_by == 'hessian_diagonal'
+                # True Hessian diagonal computation (slow but accurate)
+                # Computes d²L/d(act[i])² for each dimension i
+                activations_with_grad = None
+                
+                # Hook to replace activations with gradient-enabled version
+                def replace_activation_hook(module, input, output):
+                    nonlocal activations_with_grad
+                    activations_with_grad = output.detach().clone()
+                    activations_with_grad.requires_grad_(True)
+                    return activations_with_grad
+                
+                hook_handle = target_module.register_forward_hook(replace_activation_hook)
+                
+                # Forward pass with replaced activations
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                loss = outputs.loss
+                
+                # Remove hook
+                hook_handle.remove()
+                
+                if activations_with_grad is None:
+                    continue
+                
+                # Compute true Hessian diagonal (d²L/d(act[i])² for each i)
+                if loss.requires_grad and activations_with_grad.requires_grad:
+                    # First, compute gradient with create_graph=True and retain_graph=True
+                    # We need retain_graph=True because we'll do multiple second backward passes
+                    grads = torch.autograd.grad(
+                        loss,
+                        activations_with_grad,
+                        retain_graph=True,  # Must retain graph for second backward passes
+                        create_graph=True
+                    )
+                    
+                    # grads[0] shape: [batch, seq_len, hidden_dim]
+                    first_grad = grads[0]
+                    batch_size, seq_len, hidden_dim = first_grad.shape
+                    mask_expanded = attention_mask.unsqueeze(-1).expand_as(first_grad)
+                    
+                    # Compute true Hessian diagonal: d²L/d(act[i])² for each dimension i
+                    # This requires computing the gradient of each component of first_grad
+                    # with respect to the corresponding component of activations
+                    # NOTE: This is computationally expensive (O(batch * seq * hidden_dim) backward passes)
+                    # but gives the true second derivatives
+                    hessian_diag = torch.zeros_like(activations_with_grad)
+                    
+                    # Get valid positions from mask
+                    valid_positions = attention_mask.nonzero(as_tuple=False)  # [num_valid, 2] with (b, s) indices
+                    num_valid = valid_positions.shape[0]
+                    
+                    if num_valid > 0 and batch_idx == 0:
+                        print(f"  Computing true Hessian diagonal for {num_valid} positions × {hidden_dim} dimensions "
+                              f"(this will be slow but accurate)...")
+                    
+                    # For each valid position and dimension, compute d²L/d(act[b, s, i])²
+                    for pos_idx, (b, s) in enumerate(valid_positions):
+                        b, s = b.item(), s.item()
+                        
+                        if pos_idx > 0 and pos_idx % 100 == 0:
+                            print(f"    Processed {pos_idx}/{num_valid} positions...")
+                        
+                        for dim_idx in range(hidden_dim):
+                            # Compute second derivative for this specific position and dimension
+                            grad_element = first_grad[b, s, dim_idx]
+                            act_element = activations_with_grad[b, s, dim_idx]
+                            
+                            # Compute d(grad_element)/d(act_element) = d²L/d(act[b, s, dim_idx])²
+                            second_grad = torch.autograd.grad(
+                                outputs=grad_element,
+                                inputs=act_element,
+                                grad_outputs=torch.ones_like(grad_element),
+                                retain_graph=True,  # Keep graph for next position/dimension
+                                create_graph=False,
+                                allow_unused=True
+                            )[0]
+                            
+                            if second_grad is not None:
+                                hessian_diag[b, s, dim_idx] = second_grad
                     
                     # Apply mask and compute mean across valid positions
                     valid_hessian = hessian_diag * mask_expanded
@@ -550,7 +646,7 @@ def compute_layer_aggregates(
         mean_gradients = np.mean(all_gradients_signed, axis=0)
         dimension_size = len(mean_gradients)
         
-        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag (sum)" if aggregate_by == 'hessian_diagonal_sum' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient"))
         print(f"Layer {layer_idx} (before power/normalization): Mean {value_type} = {mean_gradients.mean():.6f}, "
               f"Max {value_type} = {np.abs(mean_gradients).max():.6f}, "
               f"Std {value_type} = {mean_gradients.std():.6f}")
@@ -596,7 +692,7 @@ def compute_layer_aggregates(
         mean_gradients = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients)
         
-        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag (sum)" if aggregate_by == 'hessian_diagonal_sum' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient"))
         print(f"Layer {layer_idx} (before power/normalization): Mean abs {value_type} = {mean_gradients.mean():.6f}, "
               f"Max {value_type} = {mean_gradients.max():.6f}, "
               f"Std {value_type} = {mean_gradients.std():.6f}")
@@ -643,7 +739,7 @@ def compute_layer_aggregates(
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients_signed)
         
-        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag (sum)" if aggregate_by == 'hessian_diagonal_sum' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient"))
         print(f"Layer {layer_idx} (before power/normalization):")
         print(f"  Mean {value_type} (signed) = {mean_gradients_signed.mean():.6f}, "
               f"Max = {np.abs(mean_gradients_signed).max():.6f}, Std = {mean_gradients_signed.std():.6f}")
@@ -723,7 +819,7 @@ def create_histogram(gradients: np.ndarray, layer_idx: int, output_dir: str, mod
         layer_idx: Layer index
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
-        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
+        aggregate_by: What was aggregated ('gradients', 'values', 'hessian_diagonal_sum', or 'hessian_diagonal')
     """
     plt.figure(figsize=(12, 6))
     
@@ -765,7 +861,7 @@ def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_di
         layer_idx: Layer index
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
-        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
+        aggregate_by: What was aggregated ('gradients', 'values', 'hessian_diagonal_sum', or 'hessian_diagonal')
     """
     plt.figure(figsize=(14, 6))
     
@@ -819,7 +915,7 @@ def create_combined_single_layer_plot(gradients_dict: Dict[str, np.ndarray], lay
         layer_idx: Layer index
         output_dir: Directory to save plot
         plot_type: 'histogram' or 'scatter'
-        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
+        aggregate_by: What was aggregated ('gradients', 'values', 'hessian_diagonal_sum', or 'hessian_diagonal')
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
     
@@ -887,7 +983,7 @@ def create_combined_histograms(all_gradients: Dict[int, np.ndarray], output_dir:
         all_gradients: Dictionary mapping layer_idx to gradient arrays
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
-        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
+        aggregate_by: What was aggregated ('gradients', 'values', 'hessian_diagonal_sum', or 'hessian_diagonal')
     """
     num_layers = len(all_gradients)
     layers = sorted(all_gradients.keys())
@@ -949,7 +1045,7 @@ def create_combined_scatter_plots(all_gradients: Dict[int, np.ndarray], output_d
         all_gradients: Dictionary mapping layer_idx to gradient arrays
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
-        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
+        aggregate_by: What was aggregated ('gradients', 'values', 'hessian_diagonal_sum', or 'hessian_diagonal')
     """
     num_layers = len(all_gradients)
     layers = sorted(all_gradients.keys())
@@ -1360,7 +1456,7 @@ def main():
     
     # Force eager attention for Hessian computation (must be done BEFORE model loading)
     # Eager attention supports second derivatives, unlike flash/memory-efficient attention
-    use_eager_attention = (args.aggregate_by == 'hessian_diagonal')
+    use_eager_attention = (args.aggregate_by in ['hessian_diagonal_sum', 'hessian_diagonal'])
     
     if use_eager_attention:
         print("Forcing eager attention implementation for Hessian computation")
@@ -1759,7 +1855,7 @@ def main():
         print("Results were NOT saved (use --save_outputs to enable saving)")
     
     # Restore SDP kernel settings if they were changed
-    if args.aggregate_by == 'hessian_diagonal' and original_sdp_settings is not None:
+    if args.aggregate_by in ['hessian_diagonal_sum', 'hessian_diagonal'] and original_sdp_settings is not None:
         try:
             torch.backends.cuda.sdp_kernel(**original_sdp_settings)
             print("Restored original SDP kernel settings")
