@@ -141,9 +141,9 @@ def parse_args():
     parser.add_argument('--aggregation_mode', type=str, default='mean_abs',
                         choices=['mean', 'mean_abs', 'both'],
                         help='Aggregation mode for gradients: mean (signed), mean_abs (absolute), or both (default: mean_abs)')
-    parser.add_argument('--normalize_values', type=str, default='sum_abs',
-                        choices=['none', 'sum_abs', 'sum', 'both'],
-                        help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs) (default: sum_abs)')
+    parser.add_argument('--normalize_gradients', type=str, default='sum_abs',
+                        choices=['none', 'sum_abs', 'sum', 'both', 'all'],
+                        help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs), all (apply all three: none, sum_abs, and sum) (default: sum_abs)')
     parser.add_argument('--aggregate_by', type=str, default='values',
                         choices=['gradients', 'values'],
                         help='What to aggregate: gradients (compute loss gradients) or values (raw activation values) (default: values)')
@@ -484,6 +484,16 @@ def compute_layer_aggregates(
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
+        elif normalize == 'all':
+            # Apply all three: none, sum, and sum_abs
+            norm_none = mean_gradients.copy()
+            norm_sum = normalize_values(mean_gradients, dimension_size, mode='sum')
+            norm_sum_abs = normalize_values(mean_gradients, dimension_size, mode='sum_abs')
+            print(f"Layer {layer_idx} (after all normalizations):")
+            print(f"  none: No normalization applied")
+            print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
+            print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
             if normalize == 'sum_abs':
@@ -519,6 +529,16 @@ def compute_layer_aggregates(
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
+        elif normalize == 'all':
+            # Apply all three: none, sum, and sum_abs
+            norm_none = mean_gradients.copy()
+            norm_sum = normalize_values(mean_gradients, dimension_size, mode='sum')
+            norm_sum_abs = normalize_values(mean_gradients, dimension_size, mode='sum_abs')
+            print(f"Layer {layer_idx} (after all normalizations):")
+            print(f"  none: No normalization applied")
+            print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
+            print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
             if normalize == 'sum_abs':
@@ -568,6 +588,28 @@ def compute_layer_aggregates(
             print(f"Layer {layer_idx} (after both normalizations):")
             print(f"  Mean (norm_sum): Sum = {np.sum(result['mean']['norm_sum']):.1f}")
             print(f"  Mean (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean']['norm_sum_abs'])):.1f}")
+            print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
+            print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
+            return result
+        elif normalize == 'all':
+            # Apply all three normalizations to both aggregation modes
+            result = {
+                'mean': {
+                    'none': mean_gradients_signed.copy(),
+                    'norm_sum': normalize_values(mean_gradients_signed, dimension_size, mode='sum'),
+                    'norm_sum_abs': normalize_values(mean_gradients_signed, dimension_size, mode='sum_abs')
+                },
+                'mean_abs': {
+                    'none': mean_gradients_abs.copy(),
+                    'norm_sum': normalize_values(mean_gradients_abs, dimension_size, mode='sum'),
+                    'norm_sum_abs': normalize_values(mean_gradients_abs, dimension_size, mode='sum_abs')
+                }
+            }
+            print(f"Layer {layer_idx} (after all normalizations):")
+            print(f"  Mean (none): No normalization applied")
+            print(f"  Mean (norm_sum): Sum = {np.sum(result['mean']['norm_sum']):.1f}")
+            print(f"  Mean (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean']['norm_sum_abs'])):.1f}")
+            print(f"  Mean_abs (none): No normalization applied")
             print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
             return result
@@ -892,6 +934,13 @@ def save_consolidated_results(
                 for layer_idx in sorted(all_results[agg_mode][norm_mode].keys()):
                     key = f'layer_{layer_idx}_{agg_mode}_{norm_mode}'
                     save_dict[key] = all_results[agg_mode][norm_mode][layer_idx]
+    elif aggregation_mode == 'both' and args.normalize_gradients == 'all':
+        # Both aggregation AND all normalizations (6 variants)
+        for agg_mode in ['mean', 'mean_abs']:
+            for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
+                for layer_idx in sorted(all_results[agg_mode][norm_mode].keys()):
+                    key = f'layer_{layer_idx}_{agg_mode}_{norm_mode}'
+                    save_dict[key] = all_results[agg_mode][norm_mode][layer_idx]
     elif aggregation_mode == 'both':
         # Both aggregation modes, single normalization
         for mode in ['mean', 'mean_abs']:
@@ -901,6 +950,12 @@ def save_consolidated_results(
     elif args.normalize_gradients == 'both':
         # Single aggregation, both normalizations
         for norm_mode in ['norm_sum', 'norm_sum_abs']:
+            for layer_idx in sorted(all_results[norm_mode].keys()):
+                key = f'layer_{layer_idx}_{aggregation_mode}_{norm_mode}'
+                save_dict[key] = all_results[norm_mode][layer_idx]
+    elif args.normalize_gradients == 'all':
+        # Single aggregation, all normalizations (3 variants)
+        for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
             for layer_idx in sorted(all_results[norm_mode].keys()):
                 key = f'layer_{layer_idx}_{aggregation_mode}_{norm_mode}'
                 save_dict[key] = all_results[norm_mode][layer_idx]
@@ -926,15 +981,19 @@ def save_consolidated_results(
     }
     
     # Add dimension info per layer
-    if aggregation_mode == 'both' and args.normalize_gradients == 'both':
-        dimension_info = {layer_idx: len(all_results['mean']['norm_sum'][layer_idx]) 
-                         for layer_idx in all_results['mean']['norm_sum'].keys()}
+    if aggregation_mode == 'both' and args.normalize_gradients in ['both', 'all']:
+        # Use first available normalization mode
+        first_norm = 'norm_sum' if 'norm_sum' in all_results['mean'] else list(all_results['mean'].keys())[0]
+        dimension_info = {layer_idx: len(all_results['mean'][first_norm][layer_idx]) 
+                         for layer_idx in all_results['mean'][first_norm].keys()}
     elif aggregation_mode == 'both':
         dimension_info = {layer_idx: len(all_results['mean'][layer_idx]) 
                          for layer_idx in all_results['mean'].keys()}
-    elif args.normalize_gradients == 'both':
-        dimension_info = {layer_idx: len(all_results['norm_sum'][layer_idx]) 
-                         for layer_idx in all_results['norm_sum'].keys()}
+    elif args.normalize_gradients in ['both', 'all']:
+        # Use first available normalization mode
+        first_norm = 'norm_sum' if 'norm_sum' in all_results else list(all_results.keys())[0]
+        dimension_info = {layer_idx: len(all_results[first_norm][layer_idx]) 
+                         for layer_idx in all_results[first_norm].keys()}
     else:
         dimension_info = {layer_idx: len(all_results[layer_idx]) 
                          for layer_idx in all_results.keys()}
@@ -1008,6 +1067,21 @@ def create_enhanced_metadata(
                         'max': float(np.abs(data).max()),
                         'sum_abs': float(np.sum(np.abs(data)))
                     }
+    elif aggregation_mode == 'both' and args.normalize_gradients == 'all':
+        for layer_idx in all_results['mean']['none'].keys():
+            dimension_size = len(all_results['mean']['none'][layer_idx])
+            metadata['dimension_info'][f'layer_{layer_idx}'] = dimension_size
+            metadata['layer_statistics'][f'layer_{layer_idx}'] = {}
+            for agg_mode in ['mean', 'mean_abs']:
+                metadata['layer_statistics'][f'layer_{layer_idx}'][agg_mode] = {}
+                for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
+                    data = all_results[agg_mode][norm_mode][layer_idx]
+                    metadata['layer_statistics'][f'layer_{layer_idx}'][agg_mode][norm_mode] = {
+                        'mean': float(data.mean()),
+                        'std': float(data.std()),
+                        'max': float(np.abs(data).max()),
+                        'sum_abs': float(np.sum(np.abs(data)))
+                    }
     elif aggregation_mode == 'both':
         for layer_idx in all_results['mean'].keys():
             dimension_size = len(all_results['mean'][layer_idx])
@@ -1032,6 +1106,19 @@ def create_enhanced_metadata(
             metadata['dimension_info'][f'layer_{layer_idx}'] = dimension_size
             metadata['layer_statistics'][f'layer_{layer_idx}'] = {}
             for norm_mode in ['norm_sum', 'norm_sum_abs']:
+                data = all_results[norm_mode][layer_idx]
+                metadata['layer_statistics'][f'layer_{layer_idx}'][norm_mode] = {
+                    'mean': float(data.mean()),
+                    'std': float(data.std()),
+                    'max': float(np.abs(data).max()),
+                    'sum_abs': float(np.sum(np.abs(data)))
+                }
+    elif args.normalize_gradients == 'all':
+        for layer_idx in all_results['none'].keys():
+            dimension_size = len(all_results['none'][layer_idx])
+            metadata['dimension_info'][f'layer_{layer_idx}'] = dimension_size
+            metadata['layer_statistics'][f'layer_{layer_idx}'] = {}
+            for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
                 data = all_results[norm_mode][layer_idx]
                 metadata['layer_statistics'][f'layer_{layer_idx}'][norm_mode] = {
                     'mean': float(data.mean()),
@@ -1189,10 +1276,17 @@ def main():
             'mean': {'norm_sum': {}, 'norm_sum_abs': {}},
             'mean_abs': {'norm_sum': {}, 'norm_sum_abs': {}}
         }
+    elif args.aggregation_mode == 'both' and args.normalize_gradients == 'all':
+        all_results = {
+            'mean': {'none': {}, 'norm_sum': {}, 'norm_sum_abs': {}},
+            'mean_abs': {'none': {}, 'norm_sum': {}, 'norm_sum_abs': {}}
+        }
     elif args.aggregation_mode == 'both':
         all_results = {'mean': {}, 'mean_abs': {}}
     elif args.normalize_gradients == 'both':
         all_results = {'norm_sum': {}, 'norm_sum_abs': {}}
+    elif args.normalize_gradients == 'all':
+        all_results = {'none': {}, 'norm_sum': {}, 'norm_sum_abs': {}}
     else:
         all_results = {}
     layer_timings = {}
@@ -1241,6 +1335,24 @@ def main():
                             create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
                             layer_timing[f'{agg_mode}_{norm_mode}_plots'] = time.time() - plot_start
             
+            elif args.aggregation_mode == 'both' and args.normalize_gradients == 'all':
+                # Both aggregation AND all normalizations = 6 variants
+                for agg_mode in ['mean', 'mean_abs']:
+                    for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
+                        all_results[agg_mode][norm_mode][layer_idx] = gradients[agg_mode][norm_mode]
+                        
+                        if output_dir is not None:
+                            # Save each variant
+                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                            np.save(os.path.join(output_dir, filename), gradients[agg_mode][norm_mode])
+                            
+                            # Create plots for each variant
+                            plot_start = time.time()
+                            mode_suffix = f'_{agg_mode}_{norm_mode}'
+                            create_histogram(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
+                            create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
+                            layer_timing[f'{agg_mode}_{norm_mode}_plots'] = time.time() - plot_start
+            
             elif args.aggregation_mode == 'both':
                 # Both aggregation modes, single normalization
                 for agg_mode in ['mean', 'mean_abs']:
@@ -1273,6 +1385,23 @@ def main():
                 
                 if output_dir is not None:
                     for norm_mode in ['norm_sum', 'norm_sum_abs']:
+                        plot_start = time.time()
+                        mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
+                        create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
+                        create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
+                        layer_timing[f'{norm_mode}_plots'] = time.time() - plot_start
+                        
+                        # Save raw gradients/values
+                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                        np.save(os.path.join(output_dir, filename), gradients[norm_mode])
+            
+            elif args.normalize_gradients == 'all':
+                # Single aggregation, all normalizations
+                for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
+                    all_results[norm_mode][layer_idx] = gradients[norm_mode]
+                
+                if output_dir is not None:
+                    for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
                         plot_start = time.time()
                         mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
                         create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
@@ -1371,9 +1500,10 @@ def main():
         print(f"Timing summary (TXT) saved to {timing_txt_file}")
         
         # Create combined plots showing all layers
-        if args.aggregation_mode == 'both' and args.normalize_gradients == 'both':
-            # 4 variants: mean x (norm_sum, norm_sum_abs) + mean_abs x (norm_sum, norm_sum_abs)
-            num_layers_check = len(all_results['mean']['norm_sum'])
+        if args.aggregation_mode == 'both' and args.normalize_gradients in ['both', 'all']:
+            # Get first available normalization mode to check layer count
+            first_norm = 'norm_sum' if 'norm_sum' in all_results['mean'] else list(all_results['mean'].keys())[0]
+            num_layers_check = len(all_results['mean'][first_norm])
             if num_layers_check > 1:
                 print("\n" + "="*60)
                 print("Creating combined plots for all layers...")
@@ -1381,7 +1511,9 @@ def main():
                 
                 combined_start = time.time()
                 for agg_mode in ['mean', 'mean_abs']:
-                    for norm_mode in ['norm_sum', 'norm_sum_abs']:
+                    # Get all normalization modes available for this aggregation mode
+                    norm_modes = list(all_results[agg_mode].keys())
+                    for norm_mode in norm_modes:
                         mode_suffix = f'_{agg_mode}_{norm_mode}'
                         create_combined_histograms(all_results[agg_mode][norm_mode], output_dir, mode_suffix)
                         create_combined_scatter_plots(all_results[agg_mode][norm_mode], output_dir, mode_suffix)
@@ -1401,14 +1533,18 @@ def main():
                 combined_time = time.time() - combined_start
                 
                 print(f"Combined plots created in {combined_time:.2f} seconds")
-        elif args.normalize_gradients == 'both':
-            if len(all_results['norm_sum']) > 1:
+        elif args.normalize_gradients in ['both', 'all']:
+            # Get first available normalization mode to check layer count
+            first_norm = list(all_results.keys())[0]
+            if len(all_results[first_norm]) > 1:
                 print("\n" + "="*60)
                 print("Creating combined plots for all layers...")
                 print("="*60)
                 
                 combined_start = time.time()
-                for norm_mode in ['norm_sum', 'norm_sum_abs']:
+                # Get all normalization modes
+                norm_modes = list(all_results.keys())
+                for norm_mode in norm_modes:
                     mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
                     create_combined_histograms(all_results[norm_mode], output_dir, mode_suffix)
                     create_combined_scatter_plots(all_results[norm_mode], output_dir, mode_suffix)
@@ -1430,12 +1566,14 @@ def main():
                 print(f"Combined plots created in {combined_time:.2f} seconds")
         
         # Calculate number of layers processed
-        if args.aggregation_mode == 'both' and args.normalize_gradients == 'both':
-            num_layers_processed = len(all_results['mean']['norm_sum'])
+        if args.aggregation_mode == 'both' and args.normalize_gradients in ['both', 'all']:
+            first_norm = list(all_results['mean'].keys())[0]
+            num_layers_processed = len(all_results['mean'][first_norm])
         elif args.aggregation_mode == 'both':
             num_layers_processed = len(all_results['mean'])
-        elif args.normalize_gradients == 'both':
-            num_layers_processed = len(all_results['norm_sum'])
+        elif args.normalize_gradients in ['both', 'all']:
+            first_norm = list(all_results.keys())[0]
+            num_layers_processed = len(all_results[first_norm])
         else:
             num_layers_processed = len(all_results)
         print(f"\nCompleted analysis for {num_layers_processed} layers")
@@ -1467,12 +1605,14 @@ def main():
     
     if output_dir is None:
         # Calculate number of layers processed
-        if args.aggregation_mode == 'both' and args.normalize_gradients == 'both':
-            num_layers_processed = len(all_results['mean']['norm_sum'])
+        if args.aggregation_mode == 'both' and args.normalize_gradients in ['both', 'all']:
+            first_norm = list(all_results['mean'].keys())[0]
+            num_layers_processed = len(all_results['mean'][first_norm])
         elif args.aggregation_mode == 'both':
             num_layers_processed = len(all_results['mean'])
-        elif args.normalize_gradients == 'both':
-            num_layers_processed = len(all_results['norm_sum'])
+        elif args.normalize_gradients in ['both', 'all']:
+            first_norm = list(all_results.keys())[0]
+            num_layers_processed = len(all_results[first_norm])
         else:
             num_layers_processed = len(all_results)
         print(f"\nCompleted analysis for {num_layers_processed} layers")
