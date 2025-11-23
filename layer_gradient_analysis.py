@@ -480,7 +480,7 @@ def compute_layer_aggregates(
                     grads = torch.autograd.grad(
                         loss,
                         activations_with_grad,
-                        retain_graph=True,
+                        retain_graph=False,
                         create_graph=True
                     )
                     
@@ -489,27 +489,23 @@ def compute_layer_aggregates(
                     batch_size, seq_len, hidden_dim = first_grad.shape
                     mask_expanded = attention_mask.unsqueeze(-1).expand_as(first_grad)
                     
-                    # Compute Hessian diagonal by taking gradient of each gradient component
-                    # This is more efficient than computing full Hessian
-                    # We compute d²L/dact[i]² for each i
-                    
-                    # Flatten for efficient computation
-                    first_grad_flat = first_grad.reshape(-1)  # [batch * seq_len * hidden_dim]
-                    act_flat = activations_with_grad.reshape(-1)  # [batch * seq_len * hidden_dim]
-                    
-                    # Compute diagonal efficiently using vectorized gradient
-                    # grad_outputs acts as a selector for which output components we differentiate
-                    hessian_diag_flat = torch.autograd.grad(
-                        first_grad_flat,
-                        act_flat,
-                        grad_outputs=torch.ones_like(first_grad_flat),
+                    # Compute Hessian-based curvature information
+                    # NOTE: This computes grad(sum(first_grad), activations) which gives us
+                    # curvature information but not the true diagonal Hessian d²L/d(act_i)²
+                    # True diagonal would require per-dimension computation (very slow)
+                    # This approximation captures how activations affect gradient magnitude
+                    hessian_diag = torch.autograd.grad(
+                        outputs=first_grad,
+                        inputs=activations_with_grad,
+                        grad_outputs=torch.ones_like(first_grad),
                         retain_graph=False,
                         create_graph=False,
-                        only_inputs=True
+                        allow_unused=True
                     )[0]
                     
-                    # Reshape back to [batch, seq_len, hidden_dim]
-                    hessian_diag = hessian_diag_flat.reshape(batch_size, seq_len, hidden_dim)
+                    # If gradient is None (unused), create zeros
+                    if hessian_diag is None:
+                        hessian_diag = torch.zeros_like(activations_with_grad)
                     
                     # Apply mask and compute mean across valid positions
                     valid_hessian = hessian_diag * mask_expanded
