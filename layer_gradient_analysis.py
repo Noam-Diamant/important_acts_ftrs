@@ -332,9 +332,39 @@ def compute_layer_aggregates(
     """
     print(f"\nProcessing layer {layer_idx} (aggregate_by={aggregate_by}, power={power})")
     
+    # Disable efficient attention for Hessian computation (requires second derivatives)
+    original_sdp_settings = None
+    if aggregate_by == 'hessian_diagonal':
+        # Save current settings
+        try:
+            original_sdp_settings = {
+                'enable_flash': torch.backends.cuda.sdp_kernel.enable_flash,
+                'enable_math': torch.backends.cuda.sdp_kernel.enable_math,
+                'enable_mem_efficient': torch.backends.cuda.sdp_kernel.enable_mem_efficient
+            }
+        except AttributeError:
+            # Fallback for older PyTorch versions
+            original_sdp_settings = None
+        
+        # Force math-based attention (supports second derivatives)
+        torch.backends.cuda.sdp_kernel(
+            enable_flash=False,
+            enable_math=True,
+            enable_mem_efficient=False
+        )
+        print("Disabled efficient attention kernels for Hessian computation (using math-based attention)")
+    
     # Storage for gradients/values across all samples
     all_gradients_signed = []
     all_gradients_abs = []
+    
+    # Helper function to restore SDP settings
+    def restore_sdp_settings():
+        if aggregate_by == 'hessian_diagonal' and original_sdp_settings is not None:
+            try:
+                torch.backends.cuda.sdp_kernel(**original_sdp_settings)
+            except (AttributeError, TypeError):
+                pass
     
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Layer {layer_idx}")):
         input_ids = batch['input_ids'].to(device)
@@ -531,6 +561,7 @@ def compute_layer_aggregates(
     if aggregation_mode == 'mean':
         if len(all_gradients_signed) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
+            restore_sdp_settings()
             return None
         mean_gradients = np.mean(all_gradients_signed, axis=0)
         dimension_size = len(mean_gradients)
@@ -547,6 +578,7 @@ def compute_layer_aggregates(
                   f"Max = {np.abs(mean_gradients).max():.6f}")
         
         if normalize == 'none':
+            restore_sdp_settings()
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
@@ -555,6 +587,7 @@ def compute_layer_aggregates(
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         elif normalize == 'all':
             # Apply all three: none, sum, and sum_abs
@@ -565,6 +598,7 @@ def compute_layer_aggregates(
             print(f"  none: No normalization applied")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
@@ -572,11 +606,13 @@ def compute_layer_aggregates(
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
                 print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return mean_gradients
     
     elif aggregation_mode == 'mean_abs':
         if len(all_gradients_abs) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
+            restore_sdp_settings()
             return None
         mean_gradients = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients)
@@ -593,6 +629,7 @@ def compute_layer_aggregates(
                   f"Max = {mean_gradients.max():.6f}")
         
         if normalize == 'none':
+            restore_sdp_settings()
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
@@ -601,6 +638,7 @@ def compute_layer_aggregates(
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         elif normalize == 'all':
             # Apply all three: none, sum, and sum_abs
@@ -611,6 +649,7 @@ def compute_layer_aggregates(
             print(f"  none: No normalization applied")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
@@ -618,11 +657,13 @@ def compute_layer_aggregates(
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
                 print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return mean_gradients
     
     else:  # both aggregation modes
         if len(all_gradients_signed) == 0 or len(all_gradients_abs) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
+            restore_sdp_settings()
             return None
         mean_gradients_signed = np.mean(all_gradients_signed, axis=0)
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
@@ -646,6 +687,7 @@ def compute_layer_aggregates(
                   f"Max = {mean_gradients_abs.max():.6f}")
         
         if normalize == 'none':
+            restore_sdp_settings()
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
         elif normalize == 'both':
             # Apply both normalizations to both aggregation modes
@@ -664,6 +706,7 @@ def compute_layer_aggregates(
             print(f"  Mean (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean']['norm_sum_abs'])):.1f}")
             print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
+            restore_sdp_settings()
             return result
         elif normalize == 'all':
             # Apply all three normalizations to both aggregation modes
@@ -686,6 +729,7 @@ def compute_layer_aggregates(
             print(f"  Mean_abs (none): No normalization applied")
             print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
+            restore_sdp_settings()
             return result
         else:
             mean_gradients_signed = normalize_values(mean_gradients_signed, dimension_size, mode=normalize)
@@ -697,6 +741,7 @@ def compute_layer_aggregates(
             elif normalize == 'sum':
                 print(f"  Mean {value_type} (signed): Sum = {np.sum(mean_gradients_signed):.1f} (target: {dimension_size})")
                 print(f"  Mean {value_type} (abs): Sum = {np.sum(mean_gradients_abs):.1f} (target: {dimension_size})")
+            restore_sdp_settings()
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
 
