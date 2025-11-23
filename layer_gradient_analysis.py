@@ -141,7 +141,7 @@ def parse_args():
     parser.add_argument('--aggregation_mode', type=str, default='mean_abs',
                         choices=['mean', 'mean_abs', 'both'],
                         help='Aggregation mode for gradients: mean (signed), mean_abs (absolute), or both (default: mean_abs)')
-    parser.add_argument('--normalize_gradients', type=str, default='sum_abs',
+    parser.add_argument('--normalize_values', type=str, default='sum_abs',
                         choices=['none', 'sum_abs', 'sum', 'both'],
                         help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs) (default: sum_abs)')
     parser.add_argument('--aggregate_by', type=str, default='values',
@@ -185,37 +185,37 @@ def parse_layer_range(layer_spec: str) -> List[int]:
         return [int(x.strip()) for x in layer_spec.split(',')]
 
 
-def normalize_gradients(gradients: np.ndarray, dimension_size: int, mode: str = 'sum_abs') -> np.ndarray:
-    """Normalize gradients based on the specified mode.
+def normalize_values(values: np.ndarray, dimension_size: int, mode: str = 'sum_abs') -> np.ndarray:
+    """Normalize array values based on the specified mode.
     
     Args:
-        gradients: Array of gradient values
+        values: Array of values (gradients or activations)
         dimension_size: Target dimension size for normalization
         mode: Normalization mode ('none', 'sum_abs', or 'sum')
-            - 'none': No normalization, returns original gradients
-            - 'sum_abs': Normalize so sum(abs(gradients)) == dimension_size
-            - 'sum': Normalize so sum(gradients) == dimension_size
+            - 'none': No normalization, returns original values
+            - 'sum_abs': Normalize so sum(abs(values)) == dimension_size
+            - 'sum': Normalize so sum(values) == dimension_size
     
     Returns:
-        Normalized gradient array based on the specified mode
+        Normalized array based on the specified mode
     """
     if mode == 'none':
-        return gradients
+        return values
     
     elif mode == 'sum_abs':
-        abs_sum = np.sum(np.abs(gradients))
+        abs_sum = np.sum(np.abs(values))
         if abs_sum == 0:
-            print("Warning: Sum of absolute gradients is zero, returning original gradients")
-            return gradients
-        normalized = gradients * (dimension_size / abs_sum)
+            print("Warning: Sum of absolute values is zero, returning original values")
+            return values
+        normalized = values * (dimension_size / abs_sum)
         return normalized
     
     elif mode == 'sum':
-        total_sum = np.sum(gradients)
+        total_sum = np.sum(values)
         if total_sum == 0:
-            print("Warning: Sum of gradients is zero, returning original gradients")
-            return gradients
-        normalized = gradients * (dimension_size / total_sum)
+            print("Warning: Sum of values is zero, returning original values")
+            return values
+        normalized = values * (dimension_size / total_sum)
         return normalized
     
     else:
@@ -296,7 +296,7 @@ def prepare_dataset(tokenizer, num_samples: int, max_length: int, batch_size: in
     return dataloader
 
 
-def compute_gradients_for_layer(
+def compute_layer_aggregates(
     model,
     tokenizer,
     dataloader,
@@ -308,7 +308,11 @@ def compute_gradients_for_layer(
     aggregate_by: str = 'values',
     power: Optional[float] = None
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-    """Compute gradients of loss w.r.t. raw MLP output activations for a specific layer.
+    """Compute aggregated statistics (gradients or values) for raw MLP output activations.
+    
+    This function computes either:
+    - Gradients of loss w.r.t. raw MLP output activations (when aggregate_by='gradients')
+    - Raw activation values themselves (when aggregate_by='values')
     
     Args:
         model: Language model
@@ -319,11 +323,11 @@ def compute_gradients_for_layer(
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
         normalize: Normalization mode ('none', 'sum_abs', or 'sum')
-        aggregate_by: 'gradients' or 'values' - what to aggregate
+        aggregate_by: 'gradients' (compute loss gradients) or 'values' (raw activation values)
         power: Optional power to raise aggregated values to before normalization
     
     Returns:
-        Array of aggregated gradients/values for each activation dimension, or dict with both if mode is 'both'
+        Array of aggregated values for each activation dimension, or dict with both if mode is 'both'
     """
     print(f"\nProcessing layer {layer_idx} (aggregate_by={aggregate_by}, power={power})")
     
@@ -474,14 +478,14 @@ def compute_gradients_for_layer(
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
-            norm_sum = normalize_gradients(mean_gradients, dimension_size, mode='sum')
-            norm_sum_abs = normalize_gradients(mean_gradients, dimension_size, mode='sum_abs')
+            norm_sum = normalize_values(mean_gradients, dimension_size, mode='sum')
+            norm_sum_abs = normalize_values(mean_gradients, dimension_size, mode='sum_abs')
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
-            mean_gradients = normalize_gradients(mean_gradients, dimension_size, mode=normalize)
+            mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
             if normalize == 'sum_abs':
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
@@ -509,14 +513,14 @@ def compute_gradients_for_layer(
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
-            norm_sum = normalize_gradients(mean_gradients, dimension_size, mode='sum')
-            norm_sum_abs = normalize_gradients(mean_gradients, dimension_size, mode='sum_abs')
+            norm_sum = normalize_values(mean_gradients, dimension_size, mode='sum')
+            norm_sum_abs = normalize_values(mean_gradients, dimension_size, mode='sum_abs')
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
-            mean_gradients = normalize_gradients(mean_gradients, dimension_size, mode=normalize)
+            mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
             if normalize == 'sum_abs':
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
@@ -553,12 +557,12 @@ def compute_gradients_for_layer(
             # Apply both normalizations to both aggregation modes
             result = {
                 'mean': {
-                    'norm_sum': normalize_gradients(mean_gradients_signed, dimension_size, mode='sum'),
-                    'norm_sum_abs': normalize_gradients(mean_gradients_signed, dimension_size, mode='sum_abs')
+                    'norm_sum': normalize_values(mean_gradients_signed, dimension_size, mode='sum'),
+                    'norm_sum_abs': normalize_values(mean_gradients_signed, dimension_size, mode='sum_abs')
                 },
                 'mean_abs': {
-                    'norm_sum': normalize_gradients(mean_gradients_abs, dimension_size, mode='sum'),
-                    'norm_sum_abs': normalize_gradients(mean_gradients_abs, dimension_size, mode='sum_abs')
+                    'norm_sum': normalize_values(mean_gradients_abs, dimension_size, mode='sum'),
+                    'norm_sum_abs': normalize_values(mean_gradients_abs, dimension_size, mode='sum_abs')
                 }
             }
             print(f"Layer {layer_idx} (after both normalizations):")
@@ -568,8 +572,8 @@ def compute_gradients_for_layer(
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
             return result
         else:
-            mean_gradients_signed = normalize_gradients(mean_gradients_signed, dimension_size, mode=normalize)
-            mean_gradients_abs = normalize_gradients(mean_gradients_abs, dimension_size, mode=normalize)
+            mean_gradients_signed = normalize_values(mean_gradients_signed, dimension_size, mode=normalize)
+            mean_gradients_abs = normalize_values(mean_gradients_abs, dimension_size, mode=normalize)
             print(f"Layer {layer_idx} (after {normalize}):")
             if normalize == 'sum_abs':
                 print(f"  Mean gradient (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
@@ -1049,7 +1053,7 @@ def create_enhanced_metadata(
     # Add loading instructions
     metadata['loading_instructions'] = {
         'npz_file': 'Use np.load(filename, allow_pickle=True) to load consolidated results',
-        'individual_npy': 'Use np.load(layer_X_mode_gradients.npy) for individual layers',
+        'individual_npy': 'Use np.load(layer_X_mode_aggregate_by.npy) for individual layers',
         'example_code': [
             "# Load consolidated .npz file:",
             "data = np.load('results.npz', allow_pickle=True)",
@@ -1102,11 +1106,12 @@ def load_results(path: str) -> Dict:
         else:
             metadata = {}
         
-        # Find all .npy files
+        # Find all .npy files (supports both old '_gradients.npy' and new naming)
         gradients = {}
         for file in os.listdir(path):
-            if file.endswith('_gradients.npy'):
-                key = file.replace('_gradients.npy', '')
+            if file.endswith('_gradients.npy') or file.endswith('_values.npy'):
+                # Remove the file extension and store
+                key = file.replace('_gradients.npy', '').replace('_values.npy', '')
                 gradients[key] = np.load(os.path.join(path, file))
         
         return {
@@ -1200,9 +1205,9 @@ def main():
         layer_start_time = time.time()
         layer_timing = {}
         
-        # Compute gradients
+        # Compute aggregated values (gradients or activations)
         grad_start = time.time()
-        gradients = compute_gradients_for_layer(
+        gradients = compute_layer_aggregates(
             model=model,
             tokenizer=tokenizer,
             dataloader=dataloader,
@@ -1226,7 +1231,7 @@ def main():
                         
                         if output_dir is not None:
                             # Save each variant
-                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode}_gradients.npy'
+                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode}_{args.aggregate_by}.npy'
                             np.save(os.path.join(output_dir, filename), gradients[agg_mode][norm_mode])
                             
                             # Create plots for each variant
@@ -1249,9 +1254,9 @@ def main():
                         create_feature_scatter_plot(gradients[mode], layer_idx, output_dir, mode_suffix)
                         layer_timing[f'{mode}_plots'] = time.time() - plot_start
                         
-                        # Save raw gradients
+                        # Save raw gradients/values
                         np.save(
-                            os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_gradients.npy'),
+                            os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_{args.aggregate_by}.npy'),
                             gradients[mode]
                         )
                     
@@ -1274,8 +1279,8 @@ def main():
                         create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
                         layer_timing[f'{norm_mode}_plots'] = time.time() - plot_start
                         
-                        # Save raw gradients
-                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode}_gradients.npy'
+                        # Save raw gradients/values
+                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode}_{args.aggregate_by}.npy'
                         np.save(os.path.join(output_dir, filename), gradients[norm_mode])
             
             else:
@@ -1290,10 +1295,10 @@ def main():
                     create_feature_scatter_plot(gradients, layer_idx, output_dir, mode_suffix)
                     layer_timing['plots'] = time.time() - plot_start
                     
-                    # Save raw gradients
+                    # Save raw gradients/values
                     save_start = time.time()
                     np.save(
-                        os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_gradients.npy'),
+                        os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_{args.aggregate_by}.npy'),
                         gradients
                     )
                     layer_timing['save_data'] = time.time() - save_start
