@@ -222,12 +222,13 @@ def normalize_values(values: np.ndarray, dimension_size: int, mode: str = 'sum_a
         raise ValueError(f"Unknown normalization mode: {mode}. Use 'none', 'sum_abs', or 'sum'")
 
 
-def load_model_and_tokenizer(model_name: str, device: str):
+def load_model_and_tokenizer(model_name: str, device: str, use_eager_attention: bool = False):
     """Load the language model and tokenizer.
     
     Args:
         model_name: Name of the model to load
         device: Device to load model on
+        use_eager_attention: If True, force eager attention (supports second derivatives)
     
     Returns:
         Tuple of (model, tokenizer)
@@ -239,10 +240,20 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Prepare model loading kwargs
+    model_kwargs = {
+        'torch_dtype': torch.float32,  # Use float32 for gradient computation
+        'device_map': device,
+    }
+    
+    # Force eager attention if needed (supports second derivatives)
+    if use_eager_attention:
+        model_kwargs['attn_implementation'] = 'eager'
+        print("Forcing eager attention implementation (supports second derivatives)")
+    
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float32,  # Use float32 for gradient computation
-        device_map=device,
+        **model_kwargs
     )
     model.eval()
     
@@ -332,39 +343,12 @@ def compute_layer_aggregates(
     """
     print(f"\nProcessing layer {layer_idx} (aggregate_by={aggregate_by}, power={power})")
     
-    # Disable efficient attention for Hessian computation (requires second derivatives)
-    original_sdp_settings = None
-    if aggregate_by == 'hessian_diagonal':
-        # Save current settings
-        try:
-            original_sdp_settings = {
-                'enable_flash': torch.backends.cuda.sdp_kernel.enable_flash,
-                'enable_math': torch.backends.cuda.sdp_kernel.enable_math,
-                'enable_mem_efficient': torch.backends.cuda.sdp_kernel.enable_mem_efficient
-            }
-        except AttributeError:
-            # Fallback for older PyTorch versions
-            original_sdp_settings = None
-        
-        # Force math-based attention (supports second derivatives)
-        torch.backends.cuda.sdp_kernel(
-            enable_flash=False,
-            enable_math=True,
-            enable_mem_efficient=False
-        )
-        print("Disabled efficient attention kernels for Hessian computation (using math-based attention)")
+    # NOTE: SDP kernel settings for Hessian computation are set in main() before model loading
+    # This is required because the settings must be applied before the model is loaded
     
     # Storage for gradients/values across all samples
     all_gradients_signed = []
     all_gradients_abs = []
-    
-    # Helper function to restore SDP settings
-    def restore_sdp_settings():
-        if aggregate_by == 'hessian_diagonal' and original_sdp_settings is not None:
-            try:
-                torch.backends.cuda.sdp_kernel(**original_sdp_settings)
-            except (AttributeError, TypeError):
-                pass
     
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Layer {layer_idx}")):
         input_ids = batch['input_ids'].to(device)
@@ -506,11 +490,12 @@ def compute_layer_aggregates(
                 
                 # Compute Hessian diagonal efficiently
                 if loss.requires_grad and activations_with_grad.requires_grad:
-                    # First, compute gradient with create_graph=True
+                    # First, compute gradient with create_graph=True and retain_graph=True
+                    # We need retain_graph=True because we'll do a second backward pass
                     grads = torch.autograd.grad(
                         loss,
                         activations_with_grad,
-                        retain_graph=False,
+                        retain_graph=True,  # Must retain graph for second backward pass
                         create_graph=True
                     )
                     
@@ -528,7 +513,7 @@ def compute_layer_aggregates(
                         outputs=first_grad,
                         inputs=activations_with_grad,
                         grad_outputs=torch.ones_like(first_grad),
-                        retain_graph=False,
+                        retain_graph=False,  # Can free graph after second backward
                         create_graph=False,
                         allow_unused=True
                     )[0]
@@ -561,7 +546,6 @@ def compute_layer_aggregates(
     if aggregation_mode == 'mean':
         if len(all_gradients_signed) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
-            restore_sdp_settings()
             return None
         mean_gradients = np.mean(all_gradients_signed, axis=0)
         dimension_size = len(mean_gradients)
@@ -578,7 +562,6 @@ def compute_layer_aggregates(
                   f"Max = {np.abs(mean_gradients).max():.6f}")
         
         if normalize == 'none':
-            restore_sdp_settings()
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
@@ -587,7 +570,6 @@ def compute_layer_aggregates(
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         elif normalize == 'all':
             # Apply all three: none, sum, and sum_abs
@@ -598,7 +580,6 @@ def compute_layer_aggregates(
             print(f"  none: No normalization applied")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
@@ -606,13 +587,11 @@ def compute_layer_aggregates(
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
                 print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return mean_gradients
     
     elif aggregation_mode == 'mean_abs':
         if len(all_gradients_abs) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
-            restore_sdp_settings()
             return None
         mean_gradients = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients)
@@ -629,7 +608,6 @@ def compute_layer_aggregates(
                   f"Max = {mean_gradients.max():.6f}")
         
         if normalize == 'none':
-            restore_sdp_settings()
             return mean_gradients
         elif normalize == 'both':
             # Apply both normalizations
@@ -638,7 +616,6 @@ def compute_layer_aggregates(
             print(f"Layer {layer_idx} (after normalization):")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return {'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         elif normalize == 'all':
             # Apply all three: none, sum, and sum_abs
@@ -649,7 +626,6 @@ def compute_layer_aggregates(
             print(f"  none: No normalization applied")
             print(f"  norm_sum: Sum = {np.sum(norm_sum):.1f} (target: {dimension_size})")
             print(f"  norm_sum_abs: Sum of abs = {np.sum(np.abs(norm_sum_abs)):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return {'none': norm_none, 'norm_sum': norm_sum, 'norm_sum_abs': norm_sum_abs}
         else:
             mean_gradients = normalize_values(mean_gradients, dimension_size, mode=normalize)
@@ -657,13 +633,11 @@ def compute_layer_aggregates(
                 print(f"Layer {layer_idx} (after {normalize}): Sum of abs values = {np.sum(np.abs(mean_gradients)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
                 print(f"Layer {layer_idx} (after {normalize}): Sum = {np.sum(mean_gradients):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return mean_gradients
     
     else:  # both aggregation modes
         if len(all_gradients_signed) == 0 or len(all_gradients_abs) == 0:
             print(f"Warning: No values computed for layer {layer_idx}")
-            restore_sdp_settings()
             return None
         mean_gradients_signed = np.mean(all_gradients_signed, axis=0)
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
@@ -687,7 +661,6 @@ def compute_layer_aggregates(
                   f"Max = {mean_gradients_abs.max():.6f}")
         
         if normalize == 'none':
-            restore_sdp_settings()
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
         elif normalize == 'both':
             # Apply both normalizations to both aggregation modes
@@ -706,7 +679,6 @@ def compute_layer_aggregates(
             print(f"  Mean (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean']['norm_sum_abs'])):.1f}")
             print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
-            restore_sdp_settings()
             return result
         elif normalize == 'all':
             # Apply all three normalizations to both aggregation modes
@@ -729,7 +701,6 @@ def compute_layer_aggregates(
             print(f"  Mean_abs (none): No normalization applied")
             print(f"  Mean_abs (norm_sum): Sum = {np.sum(result['mean_abs']['norm_sum']):.1f}")
             print(f"  Mean_abs (norm_sum_abs): Sum of abs = {np.sum(np.abs(result['mean_abs']['norm_sum_abs'])):.1f}")
-            restore_sdp_settings()
             return result
         else:
             mean_gradients_signed = normalize_values(mean_gradients_signed, dimension_size, mode=normalize)
@@ -741,7 +712,6 @@ def compute_layer_aggregates(
             elif normalize == 'sum':
                 print(f"  Mean {value_type} (signed): Sum = {np.sum(mean_gradients_signed):.1f} (target: {dimension_size})")
                 print(f"  Mean {value_type} (abs): Sum = {np.sum(mean_gradients_abs):.1f} (target: {dimension_size})")
-            restore_sdp_settings()
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
 
@@ -1371,12 +1341,38 @@ def main():
         print("\nOutputs will NOT be saved (use --save_outputs to enable)")
         output_dir = None
     
+    # Force eager attention for Hessian computation (must be done BEFORE model loading)
+    # Eager attention supports second derivatives, unlike flash/memory-efficient attention
+    use_eager_attention = (args.aggregate_by == 'hessian_diagonal')
+    
+    if use_eager_attention:
+        print("Forcing eager attention implementation for Hessian computation")
+        print("  (eager attention supports second derivatives, unlike efficient attention)")
+        
+        # Also disable SDP kernels as backup (though model config should be sufficient)
+        original_sdp_settings = None
+        try:
+            # Try to disable efficient kernels (old API - deprecated but may still work)
+            original_sdp_settings = {
+                'enable_flash': torch.backends.cuda.sdp_kernel.enable_flash,
+                'enable_math': torch.backends.cuda.sdp_kernel.enable_math,
+                'enable_mem_efficient': torch.backends.cuda.sdp_kernel.enable_mem_efficient
+            }
+            torch.backends.cuda.sdp_kernel(
+                enable_flash=False,
+                enable_math=True,
+                enable_mem_efficient=False
+            )
+        except (AttributeError, TypeError):
+            # Old API not available or deprecated - that's okay, model config will handle it
+            original_sdp_settings = None
+    
     # Load model and tokenizer
     print("\n" + "="*60)
     print("TIMING: Loading Model and Tokenizer")
     print("="*60)
     start_time = time.time()
-    model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
+    model, tokenizer = load_model_and_tokenizer(args.model_name, args.device, use_eager_attention=use_eager_attention)
     timing_stats['model_loading'] = time.time() - start_time
     print(f"Model loading took: {timing_stats['model_loading']:.2f} seconds")
     
@@ -1736,6 +1732,14 @@ def main():
             num_layers_processed = len(all_results)
         print(f"\nCompleted analysis for {num_layers_processed} layers")
         print("Results were NOT saved (use --save_outputs to enable saving)")
+    
+    # Restore SDP kernel settings if they were changed
+    if args.aggregate_by == 'hessian_diagonal' and original_sdp_settings is not None:
+        try:
+            torch.backends.cuda.sdp_kernel(**original_sdp_settings)
+            print("Restored original SDP kernel settings")
+        except (AttributeError, TypeError):
+            pass
     
     # Cleanup: restore stdout and close log file
     if tee_output is not None:
