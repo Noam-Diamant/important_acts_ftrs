@@ -145,8 +145,8 @@ def parse_args():
                         choices=['none', 'sum_abs', 'sum', 'both', 'all'],
                         help='Normalization mode: none (no normalization), sum_abs (sum of absolute values = dim_size), sum (sum = dim_size), both (apply both sum and sum_abs), all (apply all three: none, sum_abs, and sum) (default: sum_abs)')
     parser.add_argument('--aggregate_by', type=str, default='values',
-                        choices=['gradients', 'values'],
-                        help='What to aggregate: gradients (compute loss gradients) or values (raw activation values) (default: values)')
+                        choices=['gradients', 'values', 'hessian_diagonal'],
+                        help='What to aggregate: gradients (compute loss gradients), values (raw activation values), or hessian_diagonal (diagonal of Hessian matrix - second derivatives) (default: values)')
     parser.add_argument('--power', type=str, default=None,
                         help='Power to raise aggregated values to before normalization. Can be a single value (e.g., "2.0") or comma-separated list (e.g., "0.5,1.0,2.0"). If list provided, only first value is used. (optional, default: None)')
     parser.add_argument('--save_consolidated', type=str, default=None,
@@ -308,11 +308,12 @@ def compute_layer_aggregates(
     aggregate_by: str = 'values',
     power: Optional[float] = None
 ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-    """Compute aggregated statistics (gradients or values) for raw MLP output activations.
+    """Compute aggregated statistics (gradients, values, or Hessian diagonal) for raw MLP output activations.
     
     This function computes either:
     - Gradients of loss w.r.t. raw MLP output activations (when aggregate_by='gradients')
     - Raw activation values themselves (when aggregate_by='values')
+    - Diagonal of Hessian matrix (second derivatives) (when aggregate_by='hessian_diagonal')
     
     Args:
         model: Language model
@@ -323,7 +324,7 @@ def compute_layer_aggregates(
         aggregation_mode: 'mean', 'mean_abs', or 'both'
         model_config: Model configuration dictionary
         normalize: Normalization mode ('none', 'sum_abs', or 'sum')
-        aggregate_by: 'gradients' (compute loss gradients) or 'values' (raw activation values)
+        aggregate_by: 'gradients' (first derivatives), 'values' (raw activations), or 'hessian_diagonal' (second derivatives)
         power: Optional power to raise aggregated values to before normalization
     
     Returns:
@@ -384,7 +385,7 @@ def compute_layer_aggregates(
                         act_mean_abs = torch.abs(valid_acts).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
                         all_gradients_abs.append(act_mean_abs.cpu().numpy())
             
-            else:  # aggregate_by == 'gradients'
+            elif aggregate_by == 'gradients':
                 # Original gradient computation path
                 # Storage for this batch
                 batch_activations = []
@@ -449,6 +450,80 @@ def compute_layer_aggregates(
                         if aggregation_mode in ['mean_abs', 'both']:
                             grad_mean_abs = torch.abs(valid_grads).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
                             all_gradients_abs.append(grad_mean_abs.detach().cpu().numpy())
+            
+            else:  # aggregate_by == 'hessian_diagonal'
+                # Hessian diagonal computation (second derivatives)
+                activations_with_grad = None
+                
+                # Hook to replace activations with gradient-enabled version
+                def replace_activation_hook(module, input, output):
+                    nonlocal activations_with_grad
+                    activations_with_grad = output.detach().clone()
+                    activations_with_grad.requires_grad_(True)
+                    return activations_with_grad
+                
+                hook_handle = target_module.register_forward_hook(replace_activation_hook)
+                
+                # Forward pass with replaced activations
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                loss = outputs.loss
+                
+                # Remove hook
+                hook_handle.remove()
+                
+                if activations_with_grad is None:
+                    continue
+                
+                # Compute Hessian diagonal efficiently
+                if loss.requires_grad and activations_with_grad.requires_grad:
+                    # First, compute gradient with create_graph=True
+                    grads = torch.autograd.grad(
+                        loss,
+                        activations_with_grad,
+                        retain_graph=True,
+                        create_graph=True
+                    )
+                    
+                    # grads[0] shape: [batch, seq_len, hidden_dim]
+                    first_grad = grads[0]
+                    batch_size, seq_len, hidden_dim = first_grad.shape
+                    mask_expanded = attention_mask.unsqueeze(-1).expand_as(first_grad)
+                    
+                    # Compute Hessian diagonal by taking gradient of each gradient component
+                    # This is more efficient than computing full Hessian
+                    # We compute d²L/dact[i]² for each i
+                    
+                    # Flatten for efficient computation
+                    first_grad_flat = first_grad.reshape(-1)  # [batch * seq_len * hidden_dim]
+                    act_flat = activations_with_grad.reshape(-1)  # [batch * seq_len * hidden_dim]
+                    
+                    # Compute diagonal efficiently using vectorized gradient
+                    # grad_outputs acts as a selector for which output components we differentiate
+                    hessian_diag_flat = torch.autograd.grad(
+                        first_grad_flat,
+                        act_flat,
+                        grad_outputs=torch.ones_like(first_grad_flat),
+                        retain_graph=False,
+                        create_graph=False,
+                        only_inputs=True
+                    )[0]
+                    
+                    # Reshape back to [batch, seq_len, hidden_dim]
+                    hessian_diag = hessian_diag_flat.reshape(batch_size, seq_len, hidden_dim)
+                    
+                    # Apply mask and compute mean across valid positions
+                    valid_hessian = hessian_diag * mask_expanded
+                    num_valid = attention_mask.sum()
+                    
+                    if num_valid > 0:
+                        # Compute mean across batch and sequence dimensions
+                        if aggregation_mode in ['mean', 'both']:
+                            hess_mean_signed = valid_hessian.sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_signed.append(hess_mean_signed.detach().cpu().numpy())
+                        
+                        if aggregation_mode in ['mean_abs', 'both']:
+                            hess_mean_abs = torch.abs(valid_hessian).sum(dim=(0, 1)) / num_valid  # [hidden_dim]
+                            all_gradients_abs.append(hess_mean_abs.detach().cpu().numpy())
         
         except Exception as e:
             print(f"Error processing batch {batch_idx} for layer {layer_idx}: {e}")
@@ -459,14 +534,15 @@ def compute_layer_aggregates(
     # Compute mean across all batches
     if aggregation_mode == 'mean':
         if len(all_gradients_signed) == 0:
-            print(f"Warning: No gradients computed for layer {layer_idx}")
+            print(f"Warning: No values computed for layer {layer_idx}")
             return None
         mean_gradients = np.mean(all_gradients_signed, axis=0)
         dimension_size = len(mean_gradients)
         
-        print(f"Layer {layer_idx} (before power/normalization): Mean gradient = {mean_gradients.mean():.6f}, "
-              f"Max gradient = {np.abs(mean_gradients).max():.6f}, "
-              f"Std gradient = {mean_gradients.std():.6f}")
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
+        print(f"Layer {layer_idx} (before power/normalization): Mean {value_type} = {mean_gradients.mean():.6f}, "
+              f"Max {value_type} = {np.abs(mean_gradients).max():.6f}, "
+              f"Std {value_type} = {mean_gradients.std():.6f}")
         
         # Apply power transformation if specified
         if power is not None:
@@ -504,14 +580,15 @@ def compute_layer_aggregates(
     
     elif aggregation_mode == 'mean_abs':
         if len(all_gradients_abs) == 0:
-            print(f"Warning: No gradients computed for layer {layer_idx}")
+            print(f"Warning: No values computed for layer {layer_idx}")
             return None
         mean_gradients = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients)
         
-        print(f"Layer {layer_idx} (before power/normalization): Mean abs gradient = {mean_gradients.mean():.6f}, "
-              f"Max gradient = {mean_gradients.max():.6f}, "
-              f"Std gradient = {mean_gradients.std():.6f}")
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
+        print(f"Layer {layer_idx} (before power/normalization): Mean abs {value_type} = {mean_gradients.mean():.6f}, "
+              f"Max {value_type} = {mean_gradients.max():.6f}, "
+              f"Std {value_type} = {mean_gradients.std():.6f}")
         
         # Apply power transformation if specified
         if power is not None:
@@ -549,16 +626,17 @@ def compute_layer_aggregates(
     
     else:  # both aggregation modes
         if len(all_gradients_signed) == 0 or len(all_gradients_abs) == 0:
-            print(f"Warning: No gradients computed for layer {layer_idx}")
+            print(f"Warning: No values computed for layer {layer_idx}")
             return None
         mean_gradients_signed = np.mean(all_gradients_signed, axis=0)
         mean_gradients_abs = np.mean(all_gradients_abs, axis=0)
         dimension_size = len(mean_gradients_signed)
         
+        value_type = "value" if aggregate_by == 'values' else ("Hessian diag" if aggregate_by == 'hessian_diagonal' else "gradient")
         print(f"Layer {layer_idx} (before power/normalization):")
-        print(f"  Mean gradient (signed) = {mean_gradients_signed.mean():.6f}, "
+        print(f"  Mean {value_type} (signed) = {mean_gradients_signed.mean():.6f}, "
               f"Max = {np.abs(mean_gradients_signed).max():.6f}, Std = {mean_gradients_signed.std():.6f}")
-        print(f"  Mean gradient (abs) = {mean_gradients_abs.mean():.6f}, "
+        print(f"  Mean {value_type} (abs) = {mean_gradients_abs.mean():.6f}, "
               f"Max = {mean_gradients_abs.max():.6f}, Std = {mean_gradients_abs.std():.6f}")
         
         # Apply power transformation if specified
@@ -566,9 +644,9 @@ def compute_layer_aggregates(
             mean_gradients_signed = np.power(np.abs(mean_gradients_signed), power) * np.sign(mean_gradients_signed)
             mean_gradients_abs = np.power(mean_gradients_abs, power)
             print(f"Layer {layer_idx} (after power={power}):")
-            print(f"  Mean gradient (signed): Mean = {mean_gradients_signed.mean():.6f}, "
+            print(f"  Mean {value_type} (signed): Mean = {mean_gradients_signed.mean():.6f}, "
                   f"Max = {np.abs(mean_gradients_signed).max():.6f}")
-            print(f"  Mean gradient (abs): Mean = {mean_gradients_abs.mean():.6f}, "
+            print(f"  Mean {value_type} (abs): Mean = {mean_gradients_abs.mean():.6f}, "
                   f"Max = {mean_gradients_abs.max():.6f}")
         
         if normalize == 'none':
@@ -618,11 +696,11 @@ def compute_layer_aggregates(
             mean_gradients_abs = normalize_values(mean_gradients_abs, dimension_size, mode=normalize)
             print(f"Layer {layer_idx} (after {normalize}):")
             if normalize == 'sum_abs':
-                print(f"  Mean gradient (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
-                print(f"  Mean gradient (abs): Sum of abs = {np.sum(np.abs(mean_gradients_abs)):.1f} (target: {dimension_size})")
+                print(f"  Mean {value_type} (signed): Sum of abs = {np.sum(np.abs(mean_gradients_signed)):.1f} (target: {dimension_size})")
+                print(f"  Mean {value_type} (abs): Sum of abs = {np.sum(np.abs(mean_gradients_abs)):.1f} (target: {dimension_size})")
             elif normalize == 'sum':
-                print(f"  Mean gradient (signed): Sum = {np.sum(mean_gradients_signed):.1f} (target: {dimension_size})")
-                print(f"  Mean gradient (abs): Sum = {np.sum(mean_gradients_abs):.1f} (target: {dimension_size})")
+                print(f"  Mean {value_type} (signed): Sum = {np.sum(mean_gradients_signed):.1f} (target: {dimension_size})")
+                print(f"  Mean {value_type} (abs): Sum = {np.sum(mean_gradients_abs):.1f} (target: {dimension_size})")
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
 
