@@ -715,7 +715,7 @@ def compute_layer_aggregates(
             return {'mean': mean_gradients_signed, 'mean_abs': mean_gradients_abs}
 
 
-def create_histogram(gradients: np.ndarray, layer_idx: int, output_dir: str, mode_suffix: str = ""):
+def create_histogram(gradients: np.ndarray, layer_idx: int, output_dir: str, mode_suffix: str = "", aggregate_by: str = "gradients"):
     """Create and save histogram plot for gradient values.
     
     Args:
@@ -723,6 +723,7 @@ def create_histogram(gradients: np.ndarray, layer_idx: int, output_dir: str, mod
         layer_idx: Layer index
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
+        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
     """
     plt.figure(figsize=(12, 6))
     
@@ -745,15 +746,18 @@ def create_histogram(gradients: np.ndarray, layer_idx: int, output_dir: str, mod
     plt.legend()
     plt.grid(True, alpha=0.3)
     
-    # Save plot
-    output_path = os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_gradient_hist.png')
+    # Replace 'none' with 'norm_none' in mode_suffix for filenames
+    filename_suffix = mode_suffix.replace('_none', '_norm_none') if '_none' in mode_suffix else mode_suffix
+    
+    # Save plot with aggregate_by in filename
+    output_path = os.path.join(output_dir, f'layer_{layer_idx}{filename_suffix}_{aggregate_by}_hist.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
     print(f"Saved histogram to {output_path}")
 
 
-def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_dir: str, mode_suffix: str = ""):
+def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_dir: str, mode_suffix: str = "", aggregate_by: str = "gradients"):
     """Create and save scatter plot showing gradient per activation dimension.
     
     Args:
@@ -761,6 +765,7 @@ def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_di
         layer_idx: Layer index
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
+        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
     """
     plt.figure(figsize=(14, 6))
     
@@ -794,8 +799,11 @@ def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_di
     plt.legend()
     plt.grid(True, alpha=0.3)
     
-    # Save plot
-    output_path = os.path.join(output_dir, f'layer_{layer_idx}{mode_suffix}_activation_scatter.png')
+    # Replace 'none' with 'norm_none' in mode_suffix for filenames
+    filename_suffix = mode_suffix.replace('_none', '_norm_none') if '_none' in mode_suffix else mode_suffix
+    
+    # Save plot with aggregate_by in filename
+    output_path = os.path.join(output_dir, f'layer_{layer_idx}{filename_suffix}_{aggregate_by}_scatter.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
@@ -803,7 +811,7 @@ def create_feature_scatter_plot(gradients: np.ndarray, layer_idx: int, output_di
 
 
 def create_combined_single_layer_plot(gradients_dict: Dict[str, np.ndarray], layer_idx: int, 
-                                     output_dir: str, plot_type: str = 'histogram'):
+                                     output_dir: str, plot_type: str = 'histogram', aggregate_by: str = "gradients"):
     """Create combined plot showing both mean and mean_abs side by side for a single layer.
     
     Args:
@@ -811,6 +819,7 @@ def create_combined_single_layer_plot(gradients_dict: Dict[str, np.ndarray], lay
         layer_idx: Layer index
         output_dir: Directory to save plot
         plot_type: 'histogram' or 'scatter'
+        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6))
     
@@ -864,20 +873,21 @@ def create_combined_single_layer_plot(gradients_dict: Dict[str, np.ndarray], lay
     
     # Save plot
     suffix = 'hist' if plot_type == 'histogram' else 'scatter'
-    output_path = os.path.join(output_dir, f'layer_{layer_idx}_gradient_{suffix}_combined.png')
+    output_path = os.path.join(output_dir, f'layer_{layer_idx}_{aggregate_by}_{suffix}_combined.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
     print(f"Saved combined {plot_type} plot to {output_path}")
 
 
-def create_combined_histograms(all_gradients: Dict[int, np.ndarray], output_dir: str, mode_suffix: str = ""):
+def create_combined_histograms(all_gradients: Dict[int, np.ndarray], output_dir: str, mode_suffix: str = "", aggregate_by: str = "gradients"):
     """Create combined plot showing histograms for all layers.
     
     Args:
         all_gradients: Dictionary mapping layer_idx to gradient arrays
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
+        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
     """
     num_layers = len(all_gradients)
     layers = sorted(all_gradients.keys())
@@ -921,21 +931,25 @@ def create_combined_histograms(all_gradients: Dict[int, np.ndarray], output_dir:
     
     plt.tight_layout()
     
-    # Save plot
-    output_path = os.path.join(output_dir, f'all_layers{mode_suffix}_gradient_histograms.png')
+    # Replace 'none' with 'norm_none' in mode_suffix for filenames
+    filename_suffix = mode_suffix.replace('_none', '_norm_none') if '_none' in mode_suffix else mode_suffix
+    
+    # Save plot with aggregate_by in filename
+    output_path = os.path.join(output_dir, f'all_layers{filename_suffix}_{aggregate_by}_histograms.png')
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close()
     
     print(f"\nSaved combined histogram plot to {output_path}")
 
 
-def create_combined_scatter_plots(all_gradients: Dict[int, np.ndarray], output_dir: str, mode_suffix: str = ""):
+def create_combined_scatter_plots(all_gradients: Dict[int, np.ndarray], output_dir: str, mode_suffix: str = "", aggregate_by: str = "gradients"):
     """Create combined plot showing scatter plots for all layers.
     
     Args:
         all_gradients: Dictionary mapping layer_idx to gradient arrays
         output_dir: Directory to save plot
         mode_suffix: Suffix for filename (e.g., "_mean" or "_mean_abs")
+        aggregate_by: What was aggregated ('gradients', 'values', or 'hessian_diagonal')
     """
     num_layers = len(all_gradients)
     layers = sorted(all_gradients.keys())
@@ -989,8 +1003,11 @@ def create_combined_scatter_plots(all_gradients: Dict[int, np.ndarray], output_d
     
     plt.tight_layout()
     
-    # Save plot
-    output_path = os.path.join(output_dir, f'all_layers{mode_suffix}_activation_scatter.png')
+    # Replace 'none' with 'norm_none' in mode_suffix for filenames
+    filename_suffix = mode_suffix.replace('_none', '_norm_none') if '_none' in mode_suffix else mode_suffix
+    
+    # Save plot with aggregate_by in filename
+    output_path = os.path.join(output_dir, f'all_layers{filename_suffix}_{aggregate_by}_scatter.png')
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close()
     
@@ -1440,14 +1457,16 @@ def main():
                         
                         if output_dir is not None:
                             # Save each variant
-                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                            # Replace 'none' with 'norm_none' in filename
+                            norm_mode_filename = 'norm_none' if norm_mode == 'none' else norm_mode
+                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode_filename}_{args.aggregate_by}.npy'
                             np.save(os.path.join(output_dir, filename), gradients[agg_mode][norm_mode])
                             
                             # Create plots for each variant
                             plot_start = time.time()
                             mode_suffix = f'_{agg_mode}_{norm_mode}'
-                            create_histogram(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
-                            create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
+                            create_histogram(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                            create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                             layer_timing[f'{agg_mode}_{norm_mode}_plots'] = time.time() - plot_start
             
             elif args.aggregation_mode == 'both' and args.normalize_mode == 'all':
@@ -1458,14 +1477,16 @@ def main():
                         
                         if output_dir is not None:
                             # Save each variant
-                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                            # Replace 'none' with 'norm_none' in filename
+                            norm_mode_filename = 'norm_none' if norm_mode == 'none' else norm_mode
+                            filename = f'layer_{layer_idx}_{agg_mode}_{norm_mode_filename}_{args.aggregate_by}.npy'
                             np.save(os.path.join(output_dir, filename), gradients[agg_mode][norm_mode])
                             
                             # Create plots for each variant
                             plot_start = time.time()
                             mode_suffix = f'_{agg_mode}_{norm_mode}'
-                            create_histogram(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
-                            create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix)
+                            create_histogram(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                            create_feature_scatter_plot(gradients[agg_mode][norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                             layer_timing[f'{agg_mode}_{norm_mode}_plots'] = time.time() - plot_start
             
             elif args.aggregation_mode == 'both':
@@ -1477,8 +1498,8 @@ def main():
                     # Create separate plots for each mode
                     for mode, mode_suffix in [('mean', '_mean'), ('mean_abs', '_mean_abs')]:
                         plot_start = time.time()
-                        create_histogram(gradients[mode], layer_idx, output_dir, mode_suffix)
-                        create_feature_scatter_plot(gradients[mode], layer_idx, output_dir, mode_suffix)
+                        create_histogram(gradients[mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                        create_feature_scatter_plot(gradients[mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                         layer_timing[f'{mode}_plots'] = time.time() - plot_start
                         
                         # Save raw gradients/values
@@ -1489,8 +1510,8 @@ def main():
                     
                     # Create combined subplot figures
                     combined_start = time.time()
-                    create_combined_single_layer_plot(gradients, layer_idx, output_dir, 'histogram')
-                    create_combined_single_layer_plot(gradients, layer_idx, output_dir, 'scatter')
+                    create_combined_single_layer_plot(gradients, layer_idx, output_dir, 'histogram', aggregate_by=args.aggregate_by)
+                    create_combined_single_layer_plot(gradients, layer_idx, output_dir, 'scatter', aggregate_by=args.aggregate_by)
                     layer_timing['combined_plots'] = time.time() - combined_start
             
             elif args.normalize_mode == 'both':
@@ -1502,12 +1523,14 @@ def main():
                     for norm_mode in ['norm_sum', 'norm_sum_abs']:
                         plot_start = time.time()
                         mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
-                        create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
-                        create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
+                        create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                        create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                         layer_timing[f'{norm_mode}_plots'] = time.time() - plot_start
                         
                         # Save raw gradients/values
-                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                        # Replace 'none' with 'norm_none' in filename
+                        norm_mode_filename = 'norm_none' if norm_mode == 'none' else norm_mode
+                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode_filename}_{args.aggregate_by}.npy'
                         np.save(os.path.join(output_dir, filename), gradients[norm_mode])
             
             elif args.normalize_mode == 'all':
@@ -1519,12 +1542,14 @@ def main():
                     for norm_mode in ['none', 'norm_sum', 'norm_sum_abs']:
                         plot_start = time.time()
                         mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
-                        create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
-                        create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix)
+                        create_histogram(gradients[norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                        create_feature_scatter_plot(gradients[norm_mode], layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                         layer_timing[f'{norm_mode}_plots'] = time.time() - plot_start
                         
                         # Save raw gradients/values
-                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode}_{args.aggregate_by}.npy'
+                        # Replace 'none' with 'norm_none' in filename
+                        norm_mode_filename = 'norm_none' if norm_mode == 'none' else norm_mode
+                        filename = f'layer_{layer_idx}_{args.aggregation_mode}_{norm_mode_filename}_{args.aggregate_by}.npy'
                         np.save(os.path.join(output_dir, filename), gradients[norm_mode])
             
             else:
@@ -1535,8 +1560,8 @@ def main():
                 if output_dir is not None:
                     # Create plots
                     plot_start = time.time()
-                    create_histogram(gradients, layer_idx, output_dir, mode_suffix)
-                    create_feature_scatter_plot(gradients, layer_idx, output_dir, mode_suffix)
+                    create_histogram(gradients, layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                    create_feature_scatter_plot(gradients, layer_idx, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                     layer_timing['plots'] = time.time() - plot_start
                     
                     # Save raw gradients/values
@@ -1630,8 +1655,8 @@ def main():
                     norm_modes = list(all_results[agg_mode].keys())
                     for norm_mode in norm_modes:
                         mode_suffix = f'_{agg_mode}_{norm_mode}'
-                        create_combined_histograms(all_results[agg_mode][norm_mode], output_dir, mode_suffix)
-                        create_combined_scatter_plots(all_results[agg_mode][norm_mode], output_dir, mode_suffix)
+                        create_combined_histograms(all_results[agg_mode][norm_mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                        create_combined_scatter_plots(all_results[agg_mode][norm_mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                 combined_time = time.time() - combined_start
                 
                 print(f"Combined plots created in {combined_time:.2f} seconds")
@@ -1643,8 +1668,8 @@ def main():
                 
                 combined_start = time.time()
                 for mode, mode_suffix in [('mean', '_mean'), ('mean_abs', '_mean_abs')]:
-                    create_combined_histograms(all_results[mode], output_dir, mode_suffix)
-                    create_combined_scatter_plots(all_results[mode], output_dir, mode_suffix)
+                    create_combined_histograms(all_results[mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                    create_combined_scatter_plots(all_results[mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                 combined_time = time.time() - combined_start
                 
                 print(f"Combined plots created in {combined_time:.2f} seconds")
@@ -1661,8 +1686,8 @@ def main():
                 norm_modes = list(all_results.keys())
                 for norm_mode in norm_modes:
                     mode_suffix = f'_{args.aggregation_mode}_{norm_mode}'
-                    create_combined_histograms(all_results[norm_mode], output_dir, mode_suffix)
-                    create_combined_scatter_plots(all_results[norm_mode], output_dir, mode_suffix)
+                    create_combined_histograms(all_results[norm_mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                    create_combined_scatter_plots(all_results[norm_mode], output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                 combined_time = time.time() - combined_start
                 
                 print(f"Combined plots created in {combined_time:.2f} seconds")
@@ -1674,8 +1699,8 @@ def main():
                 
                 combined_start = time.time()
                 mode_suffix = f"_{args.aggregation_mode}"
-                create_combined_histograms(all_results, output_dir, mode_suffix)
-                create_combined_scatter_plots(all_results, output_dir, mode_suffix)
+                create_combined_histograms(all_results, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
+                create_combined_scatter_plots(all_results, output_dir, mode_suffix, aggregate_by=args.aggregate_by)
                 combined_time = time.time() - combined_start
                 
                 print(f"Combined plots created in {combined_time:.2f} seconds")
